@@ -4,7 +4,7 @@ import sys
 
 import pygame
 
-from airport_map import AirportMap
+from airport_map import AirportMap, Passability
 from config import (
     COLORS,
     FPS,
@@ -30,7 +30,7 @@ def create_font(size: int) -> pygame.font.Font:
 
 
 def create_interface_fonts(size: tuple[int, int]) -> tuple[pygame.font.Font, pygame.font.Font]:
-    """Create fonts proportional to the current window size."""
+    """根据当前窗口尺寸创建界面字体。"""
 
     shortest_side = min(size)
     map_size = max(12, min(22, round(shortest_side * 0.015)))
@@ -91,14 +91,21 @@ def main() -> None:
             and 0.0 <= mouse_world[1] <= WORLD_HEIGHT_M
         )
         if inside_map:
+            passability = airport_map.get_passability(mouse_world)
+            if passability == Passability.DRIVABLE:
+                area_text = "可通行"
+            elif passability == Passability.RESTRICTED:
+                area_text = "限制通行"
+            else:
+                area_text = "不可通行"
             coordinate_text = (
-                f"Mouse world coordinate: "
-                f"({mouse_world[0]:.1f} m, {mouse_world[1]:.1f} m)"
+                f"世界坐标: ({mouse_world[0]:.1f} m, {mouse_world[1]:.1f} m) "
+                f"| 区域: {area_text}"
             )
         else:
-            coordinate_text = "Mouse is outside the airport map"
+            coordinate_text = "鼠标位于机场地图之外"
 
-        status_text = f"{coordinate_text}  |  S: save screenshot  |  ESC: exit"
+        status_text = f"{coordinate_text}  |  S: 保存截图  |  ESC: 退出"
 
         screen_width, screen_height = screen.get_size()
         margin = max(10, min(screen_width, screen_height) // 100)
@@ -113,7 +120,7 @@ def main() -> None:
         )
 
         if status_font.size(status_text)[0] > status_panel.width - panel_padding * 2:
-            status_text = f"{coordinate_text}  |  S: save  |  ESC: exit"
+            status_text = f"{coordinate_text}  |  S: 保存  |  ESC: 退出"
 
         status_surface = status_font.render(status_text, True, COLORS["text"])
 
