@@ -137,6 +137,97 @@ class UGVManagerTests(unittest.TestCase):
         )
         self.assertTrue(all(agent.speed_mps == 0.0 for agent in agents[1:]))
 
+    def test_autonomous_mode_moves_all_agents(self) -> None:
+        manager = UGVManager(self.airport_map)
+        agents = manager.deploy_in_staging()
+        original_positions = {
+            agent.agent_id: agent.position
+            for agent in agents
+        }
+
+        manager.update_all(
+            1.0,
+            autonomous=True,
+            simulation_time_s=1.0,
+        )
+
+        self.assertTrue(
+            all(
+                agent.position != original_positions[agent.agent_id]
+                for agent in agents
+            )
+        )
+        self.assertTrue(all(agent.speed_mps > 0.0 for agent in agents))
+
+    def test_same_seed_repeats_autonomous_motion(self) -> None:
+        first = UGVManager(self.airport_map, RANDOM_SEED)
+        second = UGVManager(AirportMap(), RANDOM_SEED)
+        first.deploy_in_staging()
+        second.deploy_in_staging()
+
+        for step in range(50):
+            simulation_time_s = (step + 1) * 0.1
+            first.update_all(
+                0.1,
+                autonomous=True,
+                simulation_time_s=simulation_time_s,
+            )
+            second.update_all(
+                0.1,
+                autonomous=True,
+                simulation_time_s=simulation_time_s,
+            )
+
+        first_state = [
+            (
+                agent.agent_id,
+                agent.position,
+                agent.heading_rad,
+                agent.speed_mps,
+                agent.avoidance_turn_remaining_rad,
+            )
+            for agent in first.agents
+        ]
+        second_state = [
+            (
+                agent.agent_id,
+                agent.position,
+                agent.heading_rad,
+                agent.speed_mps,
+                agent.avoidance_turn_remaining_rad,
+            )
+            for agent in second.agents
+        ]
+        self.assertEqual(first_state, second_state)
+
+    def test_autonomous_motion_preserves_map_and_vehicle_clearance(self) -> None:
+        manager = UGVManager(self.airport_map)
+        agents = manager.deploy_in_staging()
+
+        for step in range(200):
+            manager.update_all(
+                0.1,
+                autonomous=True,
+                simulation_time_s=(step + 1) * 0.1,
+            )
+            for index, first in enumerate(agents):
+                self.assertTrue(
+                    self.airport_map.is_position_drivable(
+                        first.position,
+                        first.radius_m,
+                    )
+                )
+                for second in agents[index + 1:]:
+                    minimum_distance = (
+                        first.radius_m
+                        + second.radius_m
+                        + UGV_COLLISION_CLEARANCE_M
+                    )
+                    self.assertGreaterEqual(
+                        math.dist(first.position, second.position),
+                        minimum_distance,
+                    )
+
     def test_invalid_count_and_unknown_id_have_clear_errors(self) -> None:
         manager = UGVManager(self.airport_map)
         with self.assertRaisesRegex(ValueError, "count"):
@@ -200,6 +291,59 @@ class UGVManagerTests(unittest.TestCase):
 
         self.assertLess(first.position[0], 1500.0)
         self.assertEqual(manager.last_collision_agent_ids, set())
+
+    def test_head_on_agents_are_blocked_simultaneously(self) -> None:
+        manager = UGVManager(self.airport_map)
+        first, second = manager.deploy_in_staging(2)
+        first.position = (1500.0, 2200.0)
+        first.heading_rad = 0.0
+        first.speed_mps = 5.0
+        second.position = (1503.5, 2200.0)
+        second.heading_rad = math.pi
+        second.speed_mps = 5.0
+
+        manager.update_all(0.1, simulation_time_s=0.1)
+
+        self.assertEqual(first.position, (1500.0, 2200.0))
+        self.assertEqual(second.position, (1503.5, 2200.0))
+        self.assertEqual(first.speed_mps, 0.0)
+        self.assertEqual(second.speed_mps, 0.0)
+        self.assertEqual(manager.last_collision_agent_ids, {0, 1})
+
+    def test_synchronous_result_does_not_depend_on_list_order(self) -> None:
+        first_manager = UGVManager(self.airport_map)
+        second_manager = UGVManager(AirportMap())
+        first_manager.deploy_in_staging(3)
+        second_manager.deploy_in_staging(3)
+        states = {
+            0: ((1500.0, 2200.0), 0.0, 5.0),
+            1: ((1503.5, 2200.0), math.pi, 5.0),
+            2: ((1600.0, 2200.0), 0.0, 2.0),
+        }
+        for manager in (first_manager, second_manager):
+            for agent in manager.agents:
+                position, heading, speed = states[agent.agent_id]
+                agent.position = position
+                agent.heading_rad = heading
+                agent.speed_mps = speed
+        second_manager.agents.reverse()
+
+        first_manager.update_all(0.1, simulation_time_s=0.1)
+        second_manager.update_all(0.1, simulation_time_s=0.1)
+
+        first_result = {
+            agent.agent_id: (agent.position, agent.heading_rad, agent.speed_mps)
+            for agent in first_manager.agents
+        }
+        second_result = {
+            agent.agent_id: (agent.position, agent.heading_rad, agent.speed_mps)
+            for agent in second_manager.agents
+        }
+        self.assertEqual(first_result, second_result)
+        self.assertEqual(
+            first_manager.last_collision_agent_ids,
+            second_manager.last_collision_agent_ids,
+        )
 
     def test_collision_clearance_is_preserved(self) -> None:
         manager = UGVManager(self.airport_map)

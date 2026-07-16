@@ -2,9 +2,9 @@
 
 import math
 import random
-from typing import List, Optional, Set, Tuple
+from typing import Dict, List, Optional, Set, Tuple
 
-from agents.ugv import UGV
+from agents.ugv import UGV, UGVMotionProposal
 from airport_map import AirportMap
 from config import (
     INITIAL_UGV_COUNT,
@@ -27,7 +27,9 @@ class UGVManager:
         self.random_seed = random_seed
         self.agents: List[UGV] = []
         self.last_collision_agent_ids: Set[int] = set()
+        self.last_map_blocked_agent_ids: Set[int] = set()
         self.total_collision_blocks = 0
+        self.total_map_blocks = 0
 
     def deploy_in_staging(
         self,
@@ -48,24 +50,29 @@ class UGVManager:
 
         random_generator = random.Random(self.random_seed)
         selected_slots = random_generator.sample(slots, count)
-        self.agents = [
-            UGV(
-                agent_id=agent_id,
-                position=position,
-                heading_rad=random_generator.uniform(-math.pi, math.pi),
+        self.agents = []
+        for agent_id, position in enumerate(selected_slots):
+            self.agents.append(
+                UGV(
+                    agent_id=agent_id,
+                    position=position,
+                    heading_rad=random_generator.uniform(-math.pi, math.pi),
+                    avoidance_turn_direction=random_generator.choice((-1, 1)),
+                )
             )
-            for agent_id, position in enumerate(selected_slots)
-        ]
         self.last_collision_agent_ids.clear()
+        self.last_map_blocked_agent_ids.clear()
         self.total_collision_blocks = 0
+        self.total_map_blocks = 0
         return self.agents
 
     def get_agent(self, agent_id: int) -> UGV:
         """按唯一编号获取无人车，不存在时给出清晰错误。"""
 
-        if not 0 <= agent_id < len(self.agents):
-            raise KeyError(f"不存在编号为{agent_id}的无人车")
-        return self.agents[agent_id]
+        for agent in self.agents:
+            if agent.agent_id == agent_id:
+                return agent
+        raise KeyError(f"不存在编号为{agent_id}的无人车")
 
     def update_all(
         self,
@@ -75,42 +82,164 @@ class UGVManager:
         acceleration_mps2: float = 0.0,
         turn_rate_rad_s: float = 0.0,
         simulation_time_s: float = 0.0,
+        autonomous: bool = False,
+        manual_control_active: bool = False,
     ) -> None:
-        """推进所有节点，只把人工控制输入交给指定节点。"""
+        """先生成全部候选状态，再同步检查并统一提交。"""
 
-        self.last_collision_agent_ids.clear()
+        if delta_time_s < 0.0:
+            raise ValueError("delta_time_s不能为负数")
+        if delta_time_s == 0.0:
+            return
+
+        proposals: Dict[int, UGVMotionProposal] = {}
         for ugv in self.agents:
-            is_controlled = ugv.agent_id == controlled_agent_id
-            ugv.update(
+            use_manual_control = (
+                ugv.agent_id == controlled_agent_id
+                and (not autonomous or manual_control_active)
+            )
+            if use_manual_control:
+                acceleration = acceleration_mps2
+                turn_rate = turn_rate_rad_s
+            elif autonomous:
+                acceleration, turn_rate = ugv.autonomous_control(delta_time_s)
+            else:
+                acceleration = 0.0
+                turn_rate = 0.0
+
+            proposals[ugv.agent_id] = ugv.propose_motion(
                 delta_time_s,
                 self.airport_map,
-                acceleration_mps2=(acceleration_mps2 if is_controlled else 0.0),
-                turn_rate_rad_s=(turn_rate_rad_s if is_controlled else 0.0),
-                simulation_time_s=simulation_time_s,
-                position_validator=self._is_clear_of_other_agents,
+                acceleration_mps2=acceleration,
+                turn_rate_rad_s=turn_rate,
             )
+
+        self.last_map_blocked_agent_ids = {
+            agent_id
+            for agent_id, proposal in proposals.items()
+            if proposal.map_blocked
+        }
+        self.last_collision_agent_ids = self._find_collision_blocks(proposals)
+        blocked_agent_ids = (
+            self.last_map_blocked_agent_ids | self.last_collision_agent_ids
+        )
+
+        for ugv in self.agents:
+            ugv.apply_motion(
+                proposals[ugv.agent_id],
+                blocked=ugv.agent_id in blocked_agent_ids,
+                simulation_time_s=simulation_time_s,
+            )
+
+        self.total_map_blocks += len(self.last_map_blocked_agent_ids)
         self.total_collision_blocks += len(self.last_collision_agent_ids)
 
-    def _is_clear_of_other_agents(
+    def _find_collision_blocks(
         self,
-        moving_agent_id: int,
-        position: Tuple[float, float],
-        radius_m: float,
-    ) -> bool:
-        """只向单车返回安全与否，不暴露其他节点的全局位置。"""
+        proposals: Dict[int, UGVMotionProposal],
+    ) -> Set[int]:
+        """同步检查运动轨迹，返回本步因车辆冲突而停止的节点编号。"""
 
-        for other in self.agents:
-            if other.agent_id == moving_agent_id:
-                continue
-            minimum_distance = (
-                radius_m
-                + other.radius_m
-                + UGV_COLLISION_CLEARANCE_M
+        agents_by_id = {
+            agent.agent_id: agent
+            for agent in self.agents
+        }
+        ordered_ids = sorted(agents_by_id)
+        blocked_ids = {
+            agent_id
+            for agent_id, proposal in proposals.items()
+            if proposal.map_blocked
+        }
+        collision_ids: Set[int] = set()
+
+        while True:
+            newly_blocked: Set[int] = set()
+            final_positions = {
+                agent_id: (
+                    agents_by_id[agent_id].position
+                    if agent_id in blocked_ids
+                    else proposals[agent_id].position
+                )
+                for agent_id in ordered_ids
+            }
+
+            for index, first_id in enumerate(ordered_ids):
+                first = agents_by_id[first_id]
+                for second_id in ordered_ids[index + 1:]:
+                    second = agents_by_id[second_id]
+                    minimum_distance = (
+                        first.radius_m
+                        + second.radius_m
+                        + UGV_COLLISION_CLEARANCE_M
+                    )
+                    if not self._motions_conflict(
+                        first.position,
+                        final_positions[first_id],
+                        second.position,
+                        final_positions[second_id],
+                        minimum_distance,
+                    ):
+                        continue
+
+                    if (
+                        first_id not in blocked_ids
+                        and final_positions[first_id] != first.position
+                    ):
+                        newly_blocked.add(first_id)
+                    if (
+                        second_id not in blocked_ids
+                        and final_positions[second_id] != second.position
+                    ):
+                        newly_blocked.add(second_id)
+
+            if not newly_blocked:
+                return collision_ids
+
+            collision_ids.update(newly_blocked)
+            blocked_ids.update(newly_blocked)
+
+    @staticmethod
+    def _motions_conflict(
+        first_start: Tuple[float, float],
+        first_end: Tuple[float, float],
+        second_start: Tuple[float, float],
+        second_end: Tuple[float, float],
+        minimum_distance: float,
+    ) -> bool:
+        """计算两条同步直线运动轨迹在一个时间步内是否过近。"""
+
+        relative_start = (
+            first_start[0] - second_start[0],
+            first_start[1] - second_start[1],
+        )
+        relative_velocity = (
+            (first_end[0] - first_start[0])
+            - (second_end[0] - second_start[0]),
+            (first_end[1] - first_start[1])
+            - (second_end[1] - second_start[1]),
+        )
+        velocity_squared = (
+            relative_velocity[0] ** 2 + relative_velocity[1] ** 2
+        )
+        if velocity_squared == 0.0:
+            closest_time = 0.0
+        else:
+            closest_time = max(
+                0.0,
+                min(
+                    1.0,
+                    -(
+                        relative_start[0] * relative_velocity[0]
+                        + relative_start[1] * relative_velocity[1]
+                    )
+                    / velocity_squared,
+                ),
             )
-            if math.dist(position, other.position) < minimum_distance:
-                self.last_collision_agent_ids.add(moving_agent_id)
-                return False
-        return True
+        closest_offset = (
+            relative_start[0] + relative_velocity[0] * closest_time,
+            relative_start[1] + relative_velocity[1] * closest_time,
+        )
+        return math.hypot(*closest_offset) < minimum_distance
 
     def _build_deployment_slots(self) -> List[Tuple[float, float]]:
         """在待命区内构造满足车辆半径和固定间距的候选位置。"""

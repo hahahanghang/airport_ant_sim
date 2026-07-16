@@ -33,6 +33,28 @@ class UGVKinematicsTests(unittest.TestCase):
         self.assertAlmostEqual(ugv.position[0], 1505.0)
         self.assertAlmostEqual(ugv.position[1], 2200.0)
 
+    def test_motion_proposal_does_not_change_real_state(self) -> None:
+        ugv = UGV(
+            agent_id=0,
+            position=(1500.0, 2200.0),
+            heading_rad=0.0,
+            speed_mps=5.0,
+        )
+
+        proposal = ugv.propose_motion(1.0, self.airport_map)
+
+        self.assertEqual(ugv.position, (1500.0, 2200.0))
+        self.assertEqual(ugv.speed_mps, 5.0)
+        self.assertEqual(proposal.position, (1505.0, 2200.0))
+
+        ugv.apply_motion(
+            proposal,
+            blocked=False,
+            simulation_time_s=1.0,
+        )
+        self.assertEqual(ugv.position, proposal.position)
+        self.assertEqual(ugv.local_history[-1].position, proposal.position)
+
     def test_acceleration_and_speed_are_limited(self) -> None:
         ugv = UGV(0, (1500.0, 2200.0), 0.0)
         ugv.update(
@@ -124,6 +146,30 @@ class UGVKinematicsTests(unittest.TestCase):
         ugv.update(1.0, self.airport_map)
         self.assertEqual(ugv.position, (1500.0, 2200.0))
         self.assertEqual(ugv.speed_mps, 0.0)
+
+    def test_blocked_vehicle_prepares_autonomous_turn(self) -> None:
+        ugv = UGV(
+            0,
+            (1018.9, 650.0),
+            0.0,
+            speed_mps=4.0,
+            avoidance_turn_direction=-1,
+        )
+        proposal = ugv.propose_motion(0.1, self.airport_map)
+
+        self.assertTrue(proposal.map_blocked)
+        ugv.apply_motion(
+            proposal,
+            blocked=True,
+            simulation_time_s=0.1,
+        )
+        acceleration, turn_rate = ugv.autonomous_control(0.1)
+
+        self.assertEqual(ugv.position, (1018.9, 650.0))
+        self.assertEqual(ugv.speed_mps, 0.0)
+        self.assertTrue(ugv.was_blocked)
+        self.assertLess(acceleration, 0.0)
+        self.assertLess(turn_rate, 0.0)
 
     def test_local_history_has_fixed_length(self) -> None:
         ugv = UGV(0, (1500.0, 2200.0), 0.0)

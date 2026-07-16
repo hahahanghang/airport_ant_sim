@@ -1,4 +1,4 @@
-"""机场蚁群仿真第二步：显示地图并驾驶单辆无人车。"""
+"""机场蚁群仿真第二步：20辆无人车同步基础自主移动。"""
 
 import math
 import sys
@@ -14,6 +14,7 @@ from config import (
     INITIAL_UGV_COUNT,
     MAX_FRAME_TIME_S,
     SIMULATION_DT_S,
+    UGV_AUTONOMOUS_ENABLED,
     UGV_MARKER_HALF_WIDTH_PX,
     UGV_MARKER_LENGTH_PX,
     UGV_MAX_ACCELERATION_MPS2,
@@ -175,6 +176,14 @@ def main() -> None:
             turn_rate_rad_s -= maximum_turn_rate
         if keys[pygame.K_RIGHT]:
             turn_rate_rad_s += maximum_turn_rate
+        manual_control_active = any(
+            (
+                keys[pygame.K_UP],
+                keys[pygame.K_DOWN],
+                keys[pygame.K_LEFT],
+                keys[pygame.K_RIGHT],
+            )
+        )
 
         while time_accumulator_s >= SIMULATION_DT_S:
             simulation_time_s += SIMULATION_DT_S
@@ -184,6 +193,8 @@ def main() -> None:
                 acceleration_mps2=acceleration_mps2,
                 turn_rate_rad_s=turn_rate_rad_s,
                 simulation_time_s=simulation_time_s,
+                autonomous=UGV_AUTONOMOUS_ENABLED,
+                manual_control_active=manual_control_active,
             )
             time_accumulator_s -= SIMULATION_DT_S
 
@@ -215,12 +226,14 @@ def main() -> None:
         else:
             coordinate_text = "鼠标位于机场地图之外"
 
+        mode_text = "手动接管UGV-0" if manual_control_active else "20车自主移动"
         vehicle_text = (
-            f"节点: {len(ugv_manager.agents)} | 控制UGV-{ugv.agent_id}: "
+            f"节点: {len(ugv_manager.agents)} | 模式: {mode_text} | UGV-{ugv.agent_id}: "
             f"({ugv.position[0]:.1f}, {ugv.position[1]:.1f}) m "
             f"| 速度: {ugv.speed_mps:.1f} m/s | 仿真时间: {simulation_time_s:.1f} s "
-            f"| 碰撞阻挡: {ugv_manager.total_collision_blocks} "
-            f"| ↑↓加减速  ←→转向  | S: 保存截图  ESC: 退出"
+            f"| 车辆阻挡: {ugv_manager.total_collision_blocks} "
+            f"| 地图阻挡: {ugv_manager.total_map_blocks} "
+            f"| 方向键临时接管  | S: 保存截图  ESC: 退出"
         )
 
         screen_width, screen_height = screen.get_size()
@@ -246,10 +259,11 @@ def main() -> None:
                 coordinate_text = "鼠标位于地图外"
         if status_font.size(vehicle_text)[0] > available_width:
             vehicle_text = (
-                f"{len(ugv_manager.agents)}辆 | UGV-{ugv.agent_id} "
+                f"{len(ugv_manager.agents)}辆 | {mode_text} | UGV-{ugv.agent_id} "
                 f"| {ugv.speed_mps:.1f} m/s "
-                f"| 碰撞: {ugv_manager.total_collision_blocks} "
-                f"| 方向键驾驶 | S: 保存 | ESC: 退出"
+                f"| 车阻挡: {ugv_manager.total_collision_blocks} "
+                f"| 地图阻挡: {ugv_manager.total_map_blocks} "
+                f"| 方向键接管 | S: 保存 | ESC: 退出"
             )
 
         coordinate_surface = status_font.render(

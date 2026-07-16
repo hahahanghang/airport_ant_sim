@@ -13,7 +13,7 @@ WINDOW_MIN_WIDTH_PX = 640
 WINDOW_MIN_HEIGHT_PX = 480
 
 FPS = 60
-WINDOW_TITLE = "Airport Ant Swarm Simulation - Step 2"
+WINDOW_TITLE = "Airport Ant Swarm Simulation - Step 2: Autonomous Motion"
 
 # 仿真时间与随机性配置
 SIMULATION_DT_S = 0.1
@@ -32,6 +32,14 @@ UGV_LOCAL_HISTORY_LENGTH = 50
 UGV_INITIAL_HEADING_DEG = -90.0
 UGV_DEPLOYMENT_SPACING_M = 22.0
 UGV_COLLISION_CLEARANCE_M = 1.0
+
+# 20节点基础自主移动参数。
+# 第一版只实现“前进—受阻—原地转向—继续”，不包含路径规划和信息素。
+UGV_AUTONOMOUS_ENABLED = True
+UGV_AUTONOMOUS_CRUISE_SPEED_MPS = 4.0
+UGV_AUTONOMOUS_ACCELERATION_MPS2 = 1.5
+UGV_AUTONOMOUS_TURN_RATE_DEG_S = 45.0
+UGV_AUTONOMOUS_TURN_ANGLE_DEG = 90.0
 
 # 车辆的物理半径只有1米，在整幅3000米地图上不足1像素。
 # 因此使用统一的屏幕标记尺寸保证可见性，标记大小不参与碰撞计算。

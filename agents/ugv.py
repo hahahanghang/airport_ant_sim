@@ -7,6 +7,10 @@ from typing import Callable, Deque, Dict, Optional, Set, Tuple
 
 from airport_map import AirportMap
 from config import (
+    UGV_AUTONOMOUS_ACCELERATION_MPS2,
+    UGV_AUTONOMOUS_CRUISE_SPEED_MPS,
+    UGV_AUTONOMOUS_TURN_ANGLE_DEG,
+    UGV_AUTONOMOUS_TURN_RATE_DEG_S,
     UGV_COMMUNICATION_RANGE_M,
     UGV_LOCAL_HISTORY_LENGTH,
     UGV_MAX_ACCELERATION_MPS2,
@@ -30,6 +34,18 @@ class UGVHistoryEntry:
     speed_mps: float
 
 
+@dataclass(frozen=True)
+class UGVMotionProposal:
+    """单辆车为当前时间步生成、但尚未提交的候选运动状态。"""
+
+    agent_id: int
+    position: Tuple[float, float]
+    heading_rad: float
+    speed_mps: float
+    path_points: Tuple[Tuple[float, float], ...]
+    map_blocked: bool = False
+
+
 @dataclass
 class UGV:
     """单辆无人车的本地状态和运动学模型。"""
@@ -51,6 +67,9 @@ class UGV:
     local_history: Deque[UGVHistoryEntry] = field(
         default_factory=lambda: deque(maxlen=UGV_LOCAL_HISTORY_LENGTH)
     )
+    avoidance_turn_direction: int = 1
+    avoidance_turn_remaining_rad: float = 0.0
+    was_blocked: bool = False
 
     def __post_init__(self) -> None:
         """检查创建无人车时最容易输入错误的参数。"""
@@ -63,6 +82,10 @@ class UGV:
             raise ValueError("energy_level必须位于0到1之间")
         if not 0.0 <= self.speed_mps <= UGV_MAX_SPEED_MPS:
             raise ValueError("speed_mps超出允许范围")
+        if self.avoidance_turn_direction not in (-1, 1):
+            raise ValueError("avoidance_turn_direction必须为-1或1")
+        if self.avoidance_turn_remaining_rad < 0.0:
+            raise ValueError("avoidance_turn_remaining_rad不能为负数")
 
         self.heading_rad = self.normalize_heading(self.heading_rad)
 
@@ -77,6 +100,167 @@ class UGV:
 
         return math.cos(self.heading_rad), math.sin(self.heading_rad)
 
+    def autonomous_control(
+        self,
+        delta_time_s: float,
+    ) -> Tuple[float, float]:
+        """只根据本车状态生成基础自主加速度和转向速度。"""
+
+        if delta_time_s <= 0.0 or self.health_status != "healthy":
+            return 0.0, 0.0
+
+        if self.avoidance_turn_remaining_rad > 0.0:
+            maximum_turn_rate = min(
+                math.radians(UGV_AUTONOMOUS_TURN_RATE_DEG_S),
+                math.radians(UGV_MAX_TURN_RATE_DEG_S),
+            )
+            turn_this_step = min(
+                self.avoidance_turn_remaining_rad,
+                maximum_turn_rate * delta_time_s,
+            )
+            self.avoidance_turn_remaining_rad = max(
+                0.0,
+                self.avoidance_turn_remaining_rad - turn_this_step,
+            )
+            return (
+                -UGV_AUTONOMOUS_ACCELERATION_MPS2,
+                self.avoidance_turn_direction
+                * turn_this_step
+                / delta_time_s,
+            )
+
+        target_speed = min(
+            UGV_AUTONOMOUS_CRUISE_SPEED_MPS,
+            UGV_MAX_SPEED_MPS,
+        )
+        autonomous_acceleration = min(
+            UGV_AUTONOMOUS_ACCELERATION_MPS2,
+            UGV_MAX_ACCELERATION_MPS2,
+        )
+        speed_error = target_speed - self.speed_mps
+        maximum_speed_change = autonomous_acceleration * delta_time_s
+        if speed_error > maximum_speed_change:
+            acceleration = autonomous_acceleration
+        elif speed_error < -maximum_speed_change:
+            acceleration = -autonomous_acceleration
+        else:
+            acceleration = speed_error / delta_time_s
+        return acceleration, 0.0
+
+    def propose_motion(
+        self,
+        delta_time_s: float,
+        airport_map: AirportMap,
+        *,
+        acceleration_mps2: float = 0.0,
+        turn_rate_rad_s: float = 0.0,
+        allow_restricted: bool = False,
+    ) -> UGVMotionProposal:
+        """计算候选运动但不修改真实位置、航向和速度。"""
+
+        if delta_time_s < 0.0:
+            raise ValueError("delta_time_s不能为负数")
+        if delta_time_s == 0.0 or self.health_status != "healthy":
+            return UGVMotionProposal(
+                agent_id=self.agent_id,
+                position=self.position,
+                heading_rad=self.heading_rad,
+                speed_mps=0.0 if self.health_status != "healthy" else self.speed_mps,
+                path_points=(),
+            )
+
+        acceleration = max(
+            -UGV_MAX_ACCELERATION_MPS2,
+            min(acceleration_mps2, UGV_MAX_ACCELERATION_MPS2),
+        )
+        maximum_turn_rate = math.radians(UGV_MAX_TURN_RATE_DEG_S)
+        turn_rate = max(
+            -maximum_turn_rate,
+            min(turn_rate_rad_s, maximum_turn_rate),
+        )
+        next_speed = max(
+            0.0,
+            min(
+                self.speed_mps + acceleration * delta_time_s,
+                UGV_MAX_SPEED_MPS,
+            ),
+        )
+        next_heading = self.normalize_heading(
+            self.heading_rad + turn_rate * delta_time_s
+        )
+
+        distance_m = next_speed * delta_time_s
+        if distance_m == 0.0:
+            return UGVMotionProposal(
+                agent_id=self.agent_id,
+                position=self.position,
+                heading_rad=next_heading,
+                speed_mps=next_speed,
+                path_points=(),
+            )
+
+        step_length_m = max(0.5, self.radius_m)
+        step_count = max(1, math.ceil(distance_m / step_length_m))
+        distance_per_step = distance_m / step_count
+        direction_x = math.cos(next_heading)
+        direction_y = math.sin(next_heading)
+        candidate = self.position
+        path_points = []
+
+        for _ in range(step_count):
+            candidate = (
+                candidate[0] + direction_x * distance_per_step,
+                candidate[1] + direction_y * distance_per_step,
+            )
+            path_points.append(candidate)
+            if not airport_map.is_position_drivable(
+                candidate,
+                self.radius_m,
+                allow_restricted,
+            ):
+                return UGVMotionProposal(
+                    agent_id=self.agent_id,
+                    position=self.position,
+                    heading_rad=next_heading,
+                    speed_mps=0.0,
+                    path_points=tuple(path_points),
+                    map_blocked=True,
+                )
+
+        return UGVMotionProposal(
+            agent_id=self.agent_id,
+            position=candidate,
+            heading_rad=next_heading,
+            speed_mps=next_speed,
+            path_points=tuple(path_points),
+        )
+
+    def apply_motion(
+        self,
+        proposal: UGVMotionProposal,
+        *,
+        blocked: bool,
+        simulation_time_s: float,
+    ) -> None:
+        """提交候选状态；被阻挡时保留位置并准备下一步转向。"""
+
+        if proposal.agent_id != self.agent_id:
+            raise ValueError("候选状态与无人车编号不一致")
+
+        self.heading_rad = proposal.heading_rad
+        if blocked:
+            self.speed_mps = 0.0
+            self.was_blocked = True
+            self.avoidance_turn_remaining_rad = math.radians(
+                UGV_AUTONOMOUS_TURN_ANGLE_DEG
+            )
+        else:
+            self.position = proposal.position
+            self.speed_mps = proposal.speed_mps
+            self.was_blocked = False
+
+        self._record_history(simulation_time_s)
+
     def update(
         self,
         delta_time_s: float,
@@ -90,85 +274,30 @@ class UGV:
     ) -> None:
         """根据控制输入推进一个固定时间步，并阻止车辆穿过障碍。"""
 
-        if delta_time_s < 0.0:
-            raise ValueError("delta_time_s不能为负数")
         if delta_time_s == 0.0:
             return
-
-        if self.health_status != "healthy":
-            self.speed_mps = 0.0
-            self._record_history(simulation_time_s)
-            return
-
-        acceleration = max(
-            -UGV_MAX_ACCELERATION_MPS2,
-            min(acceleration_mps2, UGV_MAX_ACCELERATION_MPS2),
+        proposal = self.propose_motion(
+            delta_time_s,
+            airport_map,
+            acceleration_mps2=acceleration_mps2,
+            turn_rate_rad_s=turn_rate_rad_s,
+            allow_restricted=allow_restricted,
         )
-        maximum_turn_rate = math.radians(UGV_MAX_TURN_RATE_DEG_S)
-        turn_rate = max(
-            -maximum_turn_rate,
-            min(turn_rate_rad_s, maximum_turn_rate),
-        )
-
-        next_speed = max(
-            0.0,
-            min(
-                self.speed_mps + acceleration * delta_time_s,
-                UGV_MAX_SPEED_MPS,
-            ),
-        )
-        self.heading_rad = self.normalize_heading(
-            self.heading_rad + turn_rate * delta_time_s
-        )
-
-        distance_m = next_speed * delta_time_s
-        if distance_m > 0.0:
-            completed = self._move_with_collision_checks(
-                distance_m,
-                airport_map,
-                allow_restricted,
-                position_validator,
+        blocked = proposal.map_blocked
+        if not blocked and position_validator is not None:
+            blocked = any(
+                not position_validator(
+                    self.agent_id,
+                    point,
+                    self.radius_m,
+                )
+                for point in proposal.path_points
             )
-            self.speed_mps = next_speed if completed else 0.0
-        else:
-            self.speed_mps = next_speed
-
-        self._record_history(simulation_time_s)
-
-    def _move_with_collision_checks(
-        self,
-        distance_m: float,
-        airport_map: AirportMap,
-        allow_restricted: bool,
-        position_validator: Optional[PositionValidator],
-    ) -> bool:
-        """分成多个短距离检查，避免单个大时间步跨过薄障碍。"""
-
-        step_length_m = max(0.5, self.radius_m)
-        step_count = max(1, math.ceil(distance_m / step_length_m))
-        distance_per_step = distance_m / step_count
-        direction_x, direction_y = self.heading_vector()
-
-        for _ in range(step_count):
-            candidate = (
-                self.position[0] + direction_x * distance_per_step,
-                self.position[1] + direction_y * distance_per_step,
-            )
-            if not airport_map.is_position_drivable(
-                candidate,
-                self.radius_m,
-                allow_restricted,
-            ):
-                return False
-            if position_validator is not None and not position_validator(
-                self.agent_id,
-                candidate,
-                self.radius_m,
-            ):
-                return False
-            self.position = candidate
-
-        return True
+        self.apply_motion(
+            proposal,
+            blocked=blocked,
+            simulation_time_s=simulation_time_s,
+        )
 
     def _record_history(self, simulation_time_s: float) -> None:
         """保存有限长度的本地状态历史。"""
