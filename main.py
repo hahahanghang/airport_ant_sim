@@ -5,14 +5,17 @@ import sys
 
 import pygame
 
+from agents.manager import UGVManager
 from agents.ugv import UGV
 from airport_map import AirportMap, Passability
 from config import (
     COLORS,
     FPS,
+    INITIAL_UGV_COUNT,
     MAX_FRAME_TIME_S,
     SIMULATION_DT_S,
-    UGV_INITIAL_HEADING_DEG,
+    UGV_MARKER_HALF_WIDTH_PX,
+    UGV_MARKER_LENGTH_PX,
     UGV_MAX_ACCELERATION_MPS2,
     UGV_MAX_TURN_RATE_DEG_S,
     WINDOW_MIN_HEIGHT_PX,
@@ -50,62 +53,61 @@ def draw_ugv(
     airport_map: AirportMap,
     ugv: UGV,
     font: pygame.font.Font,
+    selected: bool = False,
 ) -> None:
-    """用带航向的三角形绘制单辆无人车。"""
+    """用带航向的三角形绘制无人车，高亮车辆额外显示感知范围。"""
 
     center = airport_map.world_to_screen_point(ugv.position)
     sensing_radius_px = max(
         1,
         round(ugv.sensing_range_m * airport_map.scale_x),
     )
-    pygame.draw.circle(
-        surface,
-        COLORS["sensing_range"],
-        center,
-        sensing_radius_px,
-        width=1,
-    )
+    if selected:
+        pygame.draw.circle(
+            surface,
+            COLORS["sensing_range"],
+            center,
+            sensing_radius_px,
+            width=1,
+        )
 
     direction_x, direction_y = ugv.heading_vector()
     side_x, side_y = -direction_y, direction_x
-    visual_length_m = max(20.0, ugv.radius_m * 5.0)
-    visual_half_width_m = max(9.0, ugv.radius_m * 2.0)
-
+    # 所有车辆使用完全相同的屏幕标记尺寸；红色只表示当前被选中。
     tip = (
-        ugv.position[0] + direction_x * visual_length_m,
-        ugv.position[1] + direction_y * visual_length_m,
+        center[0] + direction_x * UGV_MARKER_LENGTH_PX,
+        center[1] + direction_y * UGV_MARKER_LENGTH_PX,
     )
     back_center = (
-        ugv.position[0] - direction_x * visual_length_m * 0.6,
-        ugv.position[1] - direction_y * visual_length_m * 0.6,
+        center[0] - direction_x * UGV_MARKER_LENGTH_PX * 0.6,
+        center[1] - direction_y * UGV_MARKER_LENGTH_PX * 0.6,
     )
     back_left = (
-        back_center[0] + side_x * visual_half_width_m,
-        back_center[1] + side_y * visual_half_width_m,
+        back_center[0] + side_x * UGV_MARKER_HALF_WIDTH_PX,
+        back_center[1] + side_y * UGV_MARKER_HALF_WIDTH_PX,
     )
     back_right = (
-        back_center[0] - side_x * visual_half_width_m,
-        back_center[1] - side_y * visual_half_width_m,
+        back_center[0] - side_x * UGV_MARKER_HALF_WIDTH_PX,
+        back_center[1] - side_y * UGV_MARKER_HALF_WIDTH_PX,
     )
-    polygon = [
-        airport_map.world_to_screen_point(tip),
-        airport_map.world_to_screen_point(back_left),
-        airport_map.world_to_screen_point(back_right),
-    ]
-    pygame.draw.polygon(surface, COLORS["ugv"], polygon)
-    pygame.draw.line(
-        surface,
-        COLORS["ugv_heading"],
-        center,
-        airport_map.world_to_screen_point(tip),
-        width=2,
-    )
+    polygon = [tip, back_left, back_right]
+    vehicle_color = COLORS["ugv"] if selected else COLORS["ugv_idle"]
+    pygame.draw.polygon(surface, vehicle_color, polygon)
+    if selected:
+        pygame.draw.line(
+            surface,
+            COLORS["ugv_heading"],
+            center,
+            tip,
+            width=2,
+        )
 
-    label = font.render(f"UGV-{ugv.agent_id}", True, COLORS["text"])
-    label_rect = label.get_rect(
-        midleft=(center[0] + max(8, sensing_radius_px) + 4, center[1])
-    )
-    surface.blit(label, label_rect)
+    if selected:
+        label = font.render(f"UGV-{ugv.agent_id}", True, COLORS["text"])
+        label_rect = label.get_rect(
+            midleft=(center[0] + max(8, sensing_radius_px) + 4, center[1])
+        )
+        surface.blit(label, label_rect)
 
 
 def main() -> None:
@@ -122,15 +124,10 @@ def main() -> None:
 
     clock = pygame.time.Clock()
     airport_map = AirportMap()
-    staging = airport_map.staging_area
-    ugv = UGV(
-        agent_id=0,
-        position=(
-            staging.x + staging.width / 2.0,
-            staging.y + staging.height / 2.0,
-        ),
-        heading_rad=math.radians(UGV_INITIAL_HEADING_DEG),
-    )
+    ugv_manager = UGVManager(airport_map)
+    ugv_manager.deploy_in_staging(INITIAL_UGV_COUNT)
+    controlled_agent_id = 0
+    ugv = ugv_manager.get_agent(controlled_agent_id)
 
     map_font, status_font = create_interface_fonts(screen.get_size())
 
@@ -181,9 +178,9 @@ def main() -> None:
 
         while time_accumulator_s >= SIMULATION_DT_S:
             simulation_time_s += SIMULATION_DT_S
-            ugv.update(
+            ugv_manager.update_all(
                 SIMULATION_DT_S,
-                airport_map,
+                controlled_agent_id=controlled_agent_id,
                 acceleration_mps2=acceleration_mps2,
                 turn_rate_rad_s=turn_rate_rad_s,
                 simulation_time_s=simulation_time_s,
@@ -191,7 +188,10 @@ def main() -> None:
             time_accumulator_s -= SIMULATION_DT_S
 
         airport_map.draw(screen, map_font)
-        draw_ugv(screen, airport_map, ugv, map_font)
+        for agent in ugv_manager.agents:
+            if agent.agent_id != controlled_agent_id:
+                draw_ugv(screen, airport_map, agent, map_font)
+        draw_ugv(screen, airport_map, ugv, map_font, selected=True)
 
         mouse_screen = pygame.mouse.get_pos()
         mouse_world = airport_map.screen_to_world_point(mouse_screen)
@@ -216,8 +216,10 @@ def main() -> None:
             coordinate_text = "鼠标位于机场地图之外"
 
         vehicle_text = (
-            f"UGV-{ugv.agent_id}: ({ugv.position[0]:.1f}, {ugv.position[1]:.1f}) m "
+            f"节点: {len(ugv_manager.agents)} | 控制UGV-{ugv.agent_id}: "
+            f"({ugv.position[0]:.1f}, {ugv.position[1]:.1f}) m "
             f"| 速度: {ugv.speed_mps:.1f} m/s | 仿真时间: {simulation_time_s:.1f} s "
+            f"| 碰撞阻挡: {ugv_manager.total_collision_blocks} "
             f"| ↑↓加减速  ←→转向  | S: 保存截图  ESC: 退出"
         )
 
@@ -244,7 +246,9 @@ def main() -> None:
                 coordinate_text = "鼠标位于地图外"
         if status_font.size(vehicle_text)[0] > available_width:
             vehicle_text = (
-                f"UGV-{ugv.agent_id} | {ugv.speed_mps:.1f} m/s "
+                f"{len(ugv_manager.agents)}辆 | UGV-{ugv.agent_id} "
+                f"| {ugv.speed_mps:.1f} m/s "
+                f"| 碰撞: {ugv_manager.total_collision_blocks} "
                 f"| 方向键驾驶 | S: 保存 | ESC: 退出"
             )
 

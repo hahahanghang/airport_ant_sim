@@ -623,7 +623,7 @@ class AirportMap:
             font,
             show_label=False,
         )
-        self.draw_world_label(surface, "无人车待命区", (1300.0, 2460.0), font)
+        self.draw_world_label(surface, "无人车待命区", (1500.0, 2380.0), font)
 
         for building in self.support_buildings:
             self.draw_region(

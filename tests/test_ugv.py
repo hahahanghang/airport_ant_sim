@@ -10,6 +10,7 @@ from config import (
     UGV_MAX_ACCELERATION_MPS2,
     UGV_MAX_SPEED_MPS,
     UGV_MAX_TURN_RATE_DEG_S,
+    UGV_RADIUS_M,
 )
 
 
@@ -76,7 +77,11 @@ class UGVKinematicsTests(unittest.TestCase):
 
         ugv.update(3.0, self.airport_map)
 
-        self.assertLessEqual(ugv.position[0], 1017.0)
+        hangar_left_edge = self.airport_map.hangars[0].x
+        self.assertLess(
+            ugv.position[0],
+            hangar_left_edge - UGV_RADIUS_M,
+        )
         self.assertEqual(ugv.speed_mps, 0.0)
         self.assertEqual(
             self.airport_map.get_passability(ugv.position, ugv.radius_m),
@@ -86,7 +91,13 @@ class UGVKinematicsTests(unittest.TestCase):
     def test_runway_requires_explicit_permission(self) -> None:
         ugv = UGV(0, (1500.0, 1550.0), -math.pi / 2.0, speed_mps=8.0)
         ugv.update(5.0, self.airport_map)
-        self.assertGreaterEqual(ugv.position[1], 1533.0)
+        runway_bottom_edge = (
+            self.airport_map.runway.y + self.airport_map.runway.height
+        )
+        self.assertGreater(
+            ugv.position[1],
+            runway_bottom_edge + UGV_RADIUS_M,
+        )
         self.assertEqual(ugv.speed_mps, 0.0)
 
         inspection_ugv = UGV(

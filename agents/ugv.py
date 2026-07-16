@@ -3,7 +3,7 @@
 from collections import deque
 from dataclasses import dataclass, field
 import math
-from typing import Deque, Dict, Optional, Set, Tuple
+from typing import Callable, Deque, Dict, Optional, Set, Tuple
 
 from airport_map import AirportMap
 from config import (
@@ -15,6 +15,9 @@ from config import (
     UGV_RADIUS_M,
     UGV_SENSING_RANGE_M,
 )
+
+
+PositionValidator = Callable[[int, Tuple[float, float], float], bool]
 
 
 @dataclass(frozen=True)
@@ -83,6 +86,7 @@ class UGV:
         turn_rate_rad_s: float = 0.0,
         allow_restricted: bool = False,
         simulation_time_s: float = 0.0,
+        position_validator: Optional[PositionValidator] = None,
     ) -> None:
         """根据控制输入推进一个固定时间步，并阻止车辆穿过障碍。"""
 
@@ -123,6 +127,7 @@ class UGV:
                 distance_m,
                 airport_map,
                 allow_restricted,
+                position_validator,
             )
             self.speed_mps = next_speed if completed else 0.0
         else:
@@ -135,6 +140,7 @@ class UGV:
         distance_m: float,
         airport_map: AirportMap,
         allow_restricted: bool,
+        position_validator: Optional[PositionValidator],
     ) -> bool:
         """分成多个短距离检查，避免单个大时间步跨过薄障碍。"""
 
@@ -152,6 +158,12 @@ class UGV:
                 candidate,
                 self.radius_m,
                 allow_restricted,
+            ):
+                return False
+            if position_validator is not None and not position_validator(
+                self.agent_id,
+                candidate,
+                self.radius_m,
             ):
                 return False
             self.position = candidate
