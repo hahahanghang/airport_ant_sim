@@ -13,7 +13,22 @@ WINDOW_MIN_WIDTH_PX = 640
 WINDOW_MIN_HEIGHT_PX = 480
 
 FPS = 60
-WINDOW_TITLE = "Airport Ant Swarm Simulation - Step 1"
+WINDOW_TITLE = "Airport Ant Swarm Simulation - Step 2"
+
+# 仿真时间与随机性配置
+SIMULATION_DT_S = 0.1
+MAX_FRAME_TIME_S = 0.25
+RANDOM_SEED = 42
+
+# 初期无人车运动学参数
+UGV_RADIUS_M = 3.0
+UGV_MAX_SPEED_MPS = 8.0
+UGV_MAX_ACCELERATION_MPS2 = 2.5
+UGV_MAX_TURN_RATE_DEG_S = 45.0
+UGV_SENSING_RANGE_M = 60.0
+UGV_COMMUNICATION_RANGE_M = 120.0
+UGV_LOCAL_HISTORY_LENGTH = 50
+UGV_INITIAL_HEADING_DEG = -90.0
 
 # 地图颜色
 COLORS = {
@@ -31,6 +46,9 @@ COLORS = {
     "fuel": (184, 93, 73),
     "charging": (94, 151, 112),
     "maintenance": (126, 112, 151),
+    "ugv": (222, 76, 54),
+    "ugv_heading": (255, 246, 214),
+    "sensing_range": (208, 96, 75),
     "gate": (71, 130, 145),
     "fence": (45, 59, 72),
     "runway_mark": (240, 240, 235),

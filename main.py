@@ -1,13 +1,20 @@
-"""机场蚁群仿真第一步：显示机场基础地图。"""
+"""机场蚁群仿真第二步：显示地图并驾驶单辆无人车。"""
 
+import math
 import sys
 
 import pygame
 
+from agents.ugv import UGV
 from airport_map import AirportMap, Passability
 from config import (
     COLORS,
     FPS,
+    MAX_FRAME_TIME_S,
+    SIMULATION_DT_S,
+    UGV_INITIAL_HEADING_DEG,
+    UGV_MAX_ACCELERATION_MPS2,
+    UGV_MAX_TURN_RATE_DEG_S,
     WINDOW_MIN_HEIGHT_PX,
     WINDOW_MIN_WIDTH_PX,
     WINDOW_RESIZABLE,
@@ -38,6 +45,69 @@ def create_interface_fonts(size: tuple[int, int]) -> tuple[pygame.font.Font, pyg
     return create_font(map_size), create_font(status_size)
 
 
+def draw_ugv(
+    surface: pygame.Surface,
+    airport_map: AirportMap,
+    ugv: UGV,
+    font: pygame.font.Font,
+) -> None:
+    """用带航向的三角形绘制单辆无人车。"""
+
+    center = airport_map.world_to_screen_point(ugv.position)
+    sensing_radius_px = max(
+        1,
+        round(ugv.sensing_range_m * airport_map.scale_x),
+    )
+    pygame.draw.circle(
+        surface,
+        COLORS["sensing_range"],
+        center,
+        sensing_radius_px,
+        width=1,
+    )
+
+    direction_x, direction_y = ugv.heading_vector()
+    side_x, side_y = -direction_y, direction_x
+    visual_length_m = max(20.0, ugv.radius_m * 5.0)
+    visual_half_width_m = max(9.0, ugv.radius_m * 2.0)
+
+    tip = (
+        ugv.position[0] + direction_x * visual_length_m,
+        ugv.position[1] + direction_y * visual_length_m,
+    )
+    back_center = (
+        ugv.position[0] - direction_x * visual_length_m * 0.6,
+        ugv.position[1] - direction_y * visual_length_m * 0.6,
+    )
+    back_left = (
+        back_center[0] + side_x * visual_half_width_m,
+        back_center[1] + side_y * visual_half_width_m,
+    )
+    back_right = (
+        back_center[0] - side_x * visual_half_width_m,
+        back_center[1] - side_y * visual_half_width_m,
+    )
+    polygon = [
+        airport_map.world_to_screen_point(tip),
+        airport_map.world_to_screen_point(back_left),
+        airport_map.world_to_screen_point(back_right),
+    ]
+    pygame.draw.polygon(surface, COLORS["ugv"], polygon)
+    pygame.draw.line(
+        surface,
+        COLORS["ugv_heading"],
+        center,
+        airport_map.world_to_screen_point(tip),
+        width=2,
+    )
+
+    label = font.render(f"UGV-{ugv.agent_id}", True, COLORS["text"])
+    label_rect = label.get_rect(
+        midleft=(center[0] + max(8, sensing_radius_px) + 4, center[1])
+    )
+    surface.blit(label, label_rect)
+
+
 def main() -> None:
     pygame.init()
 
@@ -52,12 +122,26 @@ def main() -> None:
 
     clock = pygame.time.Clock()
     airport_map = AirportMap()
+    staging = airport_map.staging_area
+    ugv = UGV(
+        agent_id=0,
+        position=(
+            staging.x + staging.width / 2.0,
+            staging.y + staging.height / 2.0,
+        ),
+        heading_rad=math.radians(UGV_INITIAL_HEADING_DEG),
+    )
 
     map_font, status_font = create_interface_fonts(screen.get_size())
 
     running = True
+    simulation_time_s = 0.0
+    time_accumulator_s = 0.0
 
     while running:
+        frame_time_s = min(clock.tick(FPS) / 1000.0, MAX_FRAME_TIME_S)
+        time_accumulator_s += frame_time_s
+
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
                 running = False
@@ -77,11 +161,37 @@ def main() -> None:
                 if event.key == pygame.K_s:
                     pygame.image.save(
                         screen,
-                        "airport_map_step1.png",
+                        "airport_sim_step2.png",
                     )
-                    print("已保存截图：airport_map_step1.png")
+                    print("已保存截图：airport_sim_step2.png")
+
+        keys = pygame.key.get_pressed()
+        acceleration_mps2 = 0.0
+        if keys[pygame.K_UP]:
+            acceleration_mps2 += UGV_MAX_ACCELERATION_MPS2
+        if keys[pygame.K_DOWN]:
+            acceleration_mps2 -= UGV_MAX_ACCELERATION_MPS2
+
+        turn_rate_rad_s = 0.0
+        maximum_turn_rate = math.radians(UGV_MAX_TURN_RATE_DEG_S)
+        if keys[pygame.K_LEFT]:
+            turn_rate_rad_s -= maximum_turn_rate
+        if keys[pygame.K_RIGHT]:
+            turn_rate_rad_s += maximum_turn_rate
+
+        while time_accumulator_s >= SIMULATION_DT_S:
+            simulation_time_s += SIMULATION_DT_S
+            ugv.update(
+                SIMULATION_DT_S,
+                airport_map,
+                acceleration_mps2=acceleration_mps2,
+                turn_rate_rad_s=turn_rate_rad_s,
+                simulation_time_s=simulation_time_s,
+            )
+            time_accumulator_s -= SIMULATION_DT_S
 
         airport_map.draw(screen, map_font)
+        draw_ugv(screen, airport_map, ugv, map_font)
 
         mouse_screen = pygame.mouse.get_pos()
         mouse_world = airport_map.screen_to_world_point(mouse_screen)
@@ -105,12 +215,16 @@ def main() -> None:
         else:
             coordinate_text = "鼠标位于机场地图之外"
 
-        status_text = f"{coordinate_text}  |  S: 保存截图  |  ESC: 退出"
+        vehicle_text = (
+            f"UGV-{ugv.agent_id}: ({ugv.position[0]:.1f}, {ugv.position[1]:.1f}) m "
+            f"| 速度: {ugv.speed_mps:.1f} m/s | 仿真时间: {simulation_time_s:.1f} s "
+            f"| ↑↓加减速  ←→转向  | S: 保存截图  ESC: 退出"
+        )
 
         screen_width, screen_height = screen.get_size()
         margin = max(10, min(screen_width, screen_height) // 100)
         panel_padding = max(8, status_font.get_height() // 2)
-        panel_height = status_font.get_height() + panel_padding * 2
+        panel_height = status_font.get_height() * 2 + panel_padding * 3
 
         status_panel = pygame.Rect(
             margin,
@@ -119,10 +233,31 @@ def main() -> None:
             panel_height,
         )
 
-        if status_font.size(status_text)[0] > status_panel.width - panel_padding * 2:
-            status_text = f"{coordinate_text}  |  S: 保存  |  ESC: 退出"
+        available_width = status_panel.width - panel_padding * 2
+        if status_font.size(coordinate_text)[0] > available_width:
+            if inside_map:
+                coordinate_text = (
+                    f"鼠标: ({mouse_world[0]:.0f}, {mouse_world[1]:.0f}) m "
+                    f"| {area_text}"
+                )
+            else:
+                coordinate_text = "鼠标位于地图外"
+        if status_font.size(vehicle_text)[0] > available_width:
+            vehicle_text = (
+                f"UGV-{ugv.agent_id} | {ugv.speed_mps:.1f} m/s "
+                f"| 方向键驾驶 | S: 保存 | ESC: 退出"
+            )
 
-        status_surface = status_font.render(status_text, True, COLORS["text"])
+        coordinate_surface = status_font.render(
+            coordinate_text,
+            True,
+            COLORS["text"],
+        )
+        vehicle_surface = status_font.render(
+            vehicle_text,
+            True,
+            COLORS["text"],
+        )
 
         pygame.draw.rect(
             screen,
@@ -138,11 +273,20 @@ def main() -> None:
             border_radius=4,
         )
 
-        status_rect = status_surface.get_rect(center=status_panel.center)
-        screen.blit(status_surface, status_rect)
+        text_x = status_panel.x + panel_padding
+        screen.blit(
+            coordinate_surface,
+            (text_x, status_panel.y + panel_padding),
+        )
+        screen.blit(
+            vehicle_surface,
+            (
+                text_x,
+                status_panel.y + panel_padding * 2 + status_font.get_height(),
+            ),
+        )
 
         pygame.display.flip()
-        clock.tick(FPS)
 
     pygame.quit()
     sys.exit(0)

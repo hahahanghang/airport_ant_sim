@@ -621,8 +621,9 @@ class AirportMap:
             self.staging_area,
             COLORS["staging"],
             font,
-            force_label=True,
+            show_label=False,
         )
+        self.draw_world_label(surface, "无人车待命区", (1300.0, 2460.0), font)
 
         for building in self.support_buildings:
             self.draw_region(
