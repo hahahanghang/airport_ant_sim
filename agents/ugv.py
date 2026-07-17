@@ -13,6 +13,7 @@ from config import (
     UGV_AUTONOMOUS_TURN_ANGLE_DEG,
     UGV_AUTONOMOUS_TURN_RATE_DEG_S,
     UGV_COMMUNICATION_RANGE_M,
+    UGV_HISTORY_SAMPLE_INTERVAL_S,
     UGV_LOCAL_HISTORY_LENGTH,
     UGV_MAX_ACCELERATION_MPS2,
     UGV_MAX_SPEED_MPS,
@@ -73,6 +74,11 @@ class UGV:
     local_pheromone: Dict[str, float] = field(default_factory=dict)
     local_history: Deque[UGVHistoryEntry] = field(
         default_factory=lambda: deque(maxlen=UGV_LOCAL_HISTORY_LENGTH)
+    )
+    _last_history_time_s: float = field(
+        default=-math.inf,
+        init=False,
+        repr=False,
     )
     avoidance_turn_direction: int = 1
     avoidance_turn_remaining_rad: float = 0.0
@@ -288,7 +294,12 @@ class UGV:
             self.speed_mps = proposal.speed_mps
             self.was_blocked = False
 
-        self._record_history(simulation_time_s)
+        if (
+            simulation_time_s + 1e-12
+            >= self._last_history_time_s + UGV_HISTORY_SAMPLE_INTERVAL_S
+        ):
+            self._record_history(simulation_time_s)
+            self._last_history_time_s = simulation_time_s
 
     def update(
         self,

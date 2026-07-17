@@ -1,9 +1,11 @@
 """无人车批量部署管理器测试。"""
 
 import math
+import random
 import unittest
 
 from agents.manager import UGVManager
+from agents.ugv import UGV, UGVMotionProposal
 from airport_map import AirportMap
 from config import (
     INITIAL_UGV_COUNT,
@@ -370,6 +372,58 @@ class UGVManagerTests(unittest.TestCase):
             math.dist(first.position, second.position),
             minimum_distance,
         )
+
+    def test_collision_broad_phase_keeps_every_exact_conflict(self) -> None:
+        random_generator = random.Random(917)
+        agents_by_id = {}
+        proposals = {}
+        for agent_id in range(200):
+            position = (
+                random_generator.uniform(1400.0, 1500.0),
+                random_generator.uniform(2100.0, 2200.0),
+            )
+            destination = (
+                position[0] + random_generator.uniform(-8.0, 8.0),
+                position[1] + random_generator.uniform(-8.0, 8.0),
+            )
+            agents_by_id[agent_id] = UGV(agent_id, position, 0.0)
+            proposals[agent_id] = UGVMotionProposal(
+                agent_id=agent_id,
+                position=destination,
+                heading_rad=0.0,
+                speed_mps=0.0,
+                path_points=(position, destination),
+            )
+
+        candidates = set(
+            UGVManager._collision_candidate_pairs(
+                agents_by_id,
+                proposals,
+            )
+        )
+        exact_conflicts = set()
+        ordered_ids = sorted(agents_by_id)
+        for index, first_id in enumerate(ordered_ids):
+            first = agents_by_id[first_id]
+            for second_id in ordered_ids[index + 1:]:
+                second = agents_by_id[second_id]
+                minimum_distance = (
+                    first.radius_m
+                    + second.radius_m
+                    + UGV_COLLISION_CLEARANCE_M
+                )
+                if UGVManager._motions_conflict(
+                    first.position,
+                    proposals[first_id].position,
+                    second.position,
+                    proposals[second_id].position,
+                    minimum_distance,
+                ):
+                    exact_conflicts.add((first_id, second_id))
+
+        self.assertTrue(exact_conflicts)
+        self.assertTrue(exact_conflicts.issubset(candidates))
+        self.assertLess(len(candidates), len(ordered_ids) * 10)
 
 
 if __name__ == "__main__":

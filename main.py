@@ -10,13 +10,17 @@ from agents.ugv import UGV
 from airport_map import AirportMap, Passability
 from config import (
     COLORS,
+    DEFAULT_SIMULATION_SPEED,
     FPS,
+    FULL_RATE_RENDER_LOAD,
     INITIAL_UGV_COUNT,
     MAX_FRAME_TIME_S,
+    MIN_RENDER_FPS,
     SIDEBAR_MAX_WIDTH_PX,
     SIDEBAR_MIN_WIDTH_PX,
     SIDEBAR_WIDTH_RATIO,
     SIMULATION_DT_S,
+    SIMULATION_SPEED_OPTIONS,
     UGV_AUTONOMOUS_ENABLED,
     UGV_MARKER_HALF_WIDTH_PX,
     UGV_MARKER_LENGTH_PX,
@@ -80,6 +84,141 @@ def calculate_interface_layout(
         screen_height,
     )
     return sidebar_rect, map_viewport
+
+
+def create_map_background(
+    size: tuple[int, int],
+    airport_map: AirportMap,
+    map_font: pygame.font.Font,
+    map_viewport: pygame.Rect,
+) -> pygame.Surface:
+    """创建只在窗口尺寸变化时重绘的静态机场底图。"""
+
+    background = pygame.Surface(size)
+    airport_map.draw(background, map_font, map_viewport)
+    return background
+
+
+def format_speed_multiplier(speed: float) -> str:
+    """把倍速格式化为适合按钮显示的短文本。"""
+
+    return f"{speed:g}×"
+
+
+def change_simulation_speed(current_speed: float, direction: int) -> float:
+    """按配置顺序切换倍速，并在最小、最大档位处停止。"""
+
+    if direction not in (-1, 1):
+        raise ValueError("direction必须是-1或1")
+    if current_speed not in SIMULATION_SPEED_OPTIONS:
+        raise ValueError("current_speed必须是已配置的仿真倍速")
+
+    current_index = SIMULATION_SPEED_OPTIONS.index(current_speed)
+    next_index = max(
+        0,
+        min(len(SIMULATION_SPEED_OPTIONS) - 1, current_index + direction),
+    )
+    return SIMULATION_SPEED_OPTIONS[next_index]
+
+
+def scaled_frame_time(
+    frame_time_s: float,
+    simulation_speed: float,
+    paused: bool,
+) -> float:
+    """将现实帧时间换算成待推进的仿真时间。"""
+
+    if frame_time_s < 0.0:
+        raise ValueError("frame_time_s不能为负数")
+    if simulation_speed <= 0.0:
+        raise ValueError("simulation_speed必须大于0")
+    if paused:
+        return 0.0
+    return frame_time_s * simulation_speed
+
+
+def calculate_render_fps(
+    agent_count: int,
+    simulation_speed: float,
+    paused: bool,
+) -> int:
+    """根据节点规模和倍速降低绘制负载，但不减少仿真时间步。"""
+
+    if agent_count <= 0:
+        raise ValueError("agent_count必须大于0")
+    if simulation_speed <= 0.0:
+        raise ValueError("simulation_speed必须大于0")
+    if paused:
+        return FPS
+
+    load = agent_count * simulation_speed
+    if load <= FULL_RATE_RENDER_LOAD:
+        return FPS
+    return max(
+        MIN_RENDER_FPS,
+        min(FPS, round(FPS * FULL_RATE_RENDER_LOAD / load)),
+    )
+
+
+def calculate_speed_control_layout(
+    sidebar_rect: pygame.Rect,
+    font: pygame.font.Font,
+) -> tuple[dict[float, pygame.Rect], pygame.Rect]:
+    """计算左侧栏中的六个倍速按钮和暂停按钮位置。"""
+
+    padding = max(8, font.get_height() // 2)
+    line_gap = max(1, font.get_height() // 7)
+    line_step = font.get_height() + line_gap
+    label_y = sidebar_rect.y + padding + 3 * line_step
+
+    pause_width = max(48, min(70, sidebar_rect.width // 3))
+    pause_rect = pygame.Rect(
+        sidebar_rect.right - padding - pause_width,
+        label_y - 2,
+        pause_width,
+        font.get_height() + 5,
+    )
+
+    column_gap = 4
+    available_width = max(3, sidebar_rect.width - 2 * padding)
+    button_width = max(1, (available_width - 2 * column_gap) // 3)
+    button_height = font.get_height() + 7
+    start_y = label_y + font.get_height() + line_gap + 3
+    button_rects: dict[float, pygame.Rect] = {}
+    for index, speed in enumerate(SIMULATION_SPEED_OPTIONS):
+        row, column = divmod(index, 3)
+        button_rects[speed] = pygame.Rect(
+            sidebar_rect.x + padding + column * (button_width + column_gap),
+            start_y + row * (button_height + column_gap),
+            button_width,
+            button_height,
+        )
+    return button_rects, pause_rect
+
+
+def draw_control_button(
+    surface: pygame.Surface,
+    rect: pygame.Rect,
+    font: pygame.font.Font,
+    text: str,
+    active: bool,
+) -> None:
+    """绘制一个可点击的倍速或暂停按钮。"""
+
+    fill_color = COLORS["button_active"] if active else COLORS["button"]
+    text_color = (
+        COLORS["button_active_text"] if active else COLORS["text"]
+    )
+    pygame.draw.rect(surface, fill_color, rect, border_radius=4)
+    pygame.draw.rect(
+        surface,
+        COLORS["fence"],
+        rect,
+        width=1,
+        border_radius=4,
+    )
+    text_surface = font.render(text, True, text_color)
+    surface.blit(text_surface, text_surface.get_rect(center=rect.center))
 
 
 def draw_ugv(
@@ -198,6 +337,8 @@ def draw_sidebar(
     ugv_manager: UGVManager,
     ugv: UGV,
     simulation_time_s: float,
+    simulation_speed: float,
+    simulation_paused: bool,
     mode_text: str,
     mouse_world: tuple[float, float],
     inside_map: bool,
@@ -219,11 +360,47 @@ def draw_sidebar(
         border_radius=5,
     )
 
-    lines = [
+    padding = max(8, font.get_height() // 2)
+    line_gap = max(1, font.get_height() // 7)
+    line_step = font.get_height() + line_gap
+    top_y = sidebar_rect.y + padding
+    header_lines = [
         "仿真状态",
         f"模式: {mode_text}",
         f"节点/时间: {len(ugv_manager.agents)} / {simulation_time_s:.1f}s",
-        "",
+    ]
+    for index, line in enumerate(header_lines):
+        text_surface = font.render(line, True, COLORS["text"])
+        surface.blit(text_surface, (sidebar_rect.x + padding, top_y + index * line_step))
+
+    button_rects, pause_rect = calculate_speed_control_layout(
+        sidebar_rect,
+        font,
+    )
+    speed_label = font.render(
+        f"仿真倍速: {format_speed_multiplier(simulation_speed)}",
+        True,
+        COLORS["text"],
+    )
+    surface.blit(speed_label, (sidebar_rect.x + padding, top_y + 3 * line_step))
+    draw_control_button(
+        surface,
+        pause_rect,
+        font,
+        "继续" if simulation_paused else "暂停",
+        simulation_paused,
+    )
+    for speed, button_rect in button_rects.items():
+        draw_control_button(
+            surface,
+            button_rect,
+            font,
+            format_speed_multiplier(speed),
+            speed == simulation_speed,
+        )
+
+    y = max(rect.bottom for rect in button_rects.values()) + max(5, line_gap * 2)
+    lines = [
         f"高亮: UGV-{ugv.agent_id}",
         f"位置: {ugv.position[0]:.0f}, {ugv.position[1]:.0f}m",
         f"速度: {ugv.speed_mps:.1f} m/s",
@@ -247,14 +424,12 @@ def draw_sidebar(
         [
             "",
             "方向键: 临时接管",
+            "空格: 暂停  +/-: 倍速",
             "S: 截图  ESC: 退出",
             "",
         ]
     )
 
-    padding = max(8, font.get_height() // 2)
-    line_gap = max(1, font.get_height() // 7)
-    y = sidebar_rect.y + padding
     for line in lines:
         if not line:
             y += max(4, line_gap * 2)
@@ -313,14 +488,25 @@ def main() -> None:
     ugv = ugv_manager.get_agent(controlled_agent_id)
 
     map_font, status_font = create_interface_fonts(screen.get_size())
+    sidebar_rect, map_viewport = calculate_interface_layout(
+        screen.get_size()
+    )
+    map_background = create_map_background(
+        screen.get_size(),
+        airport_map,
+        map_font,
+        map_viewport,
+    )
 
     running = True
     simulation_time_s = 0.0
     time_accumulator_s = 0.0
+    render_time_accumulator_s = 1.0 / FPS
+    simulation_speed = DEFAULT_SIMULATION_SPEED
+    simulation_paused = False
 
     while running:
         frame_time_s = min(clock.tick(FPS) / 1000.0, MAX_FRAME_TIME_S)
-        time_accumulator_s += frame_time_s
 
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
@@ -333,10 +519,38 @@ def main() -> None:
                 )
                 screen = pygame.display.set_mode(window_size, display_flags)
                 map_font, status_font = create_interface_fonts(window_size)
+                sidebar_rect, map_viewport = calculate_interface_layout(
+                    window_size
+                )
+                map_background = create_map_background(
+                    window_size,
+                    airport_map,
+                    map_font,
+                    map_viewport,
+                )
 
             if event.type == pygame.KEYDOWN:
                 if event.key == pygame.K_ESCAPE:
                     running = False
+
+                if event.key == pygame.K_SPACE:
+                    simulation_paused = not simulation_paused
+
+                if event.key in (pygame.K_MINUS, pygame.K_KP_MINUS):
+                    simulation_speed = change_simulation_speed(
+                        simulation_speed,
+                        -1,
+                    )
+
+                if event.key in (
+                    pygame.K_EQUALS,
+                    pygame.K_PLUS,
+                    pygame.K_KP_PLUS,
+                ):
+                    simulation_speed = change_simulation_speed(
+                        simulation_speed,
+                        1,
+                    )
 
                 if event.key == pygame.K_s:
                     pygame.image.save(
@@ -344,6 +558,28 @@ def main() -> None:
                         "airport_sim_step2.png",
                     )
                     print("已保存截图：airport_sim_step2.png")
+
+            if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
+                sidebar_rect, _ = calculate_interface_layout(screen.get_size())
+                speed_button_rects, pause_rect = calculate_speed_control_layout(
+                    sidebar_rect,
+                    status_font,
+                )
+                if pause_rect.collidepoint(event.pos):
+                    simulation_paused = not simulation_paused
+                else:
+                    for speed, button_rect in speed_button_rects.items():
+                        if button_rect.collidepoint(event.pos):
+                            simulation_speed = speed
+                            simulation_paused = False
+                            break
+
+        time_accumulator_s += scaled_frame_time(
+            frame_time_s,
+            simulation_speed,
+            simulation_paused,
+        )
+        render_time_accumulator_s += frame_time_s
 
         keys = pygame.key.get_pressed()
         acceleration_mps2 = 0.0
@@ -380,10 +616,17 @@ def main() -> None:
             )
             time_accumulator_s -= SIMULATION_DT_S
 
-        sidebar_rect, map_viewport = calculate_interface_layout(
-            screen.get_size()
+        render_fps = calculate_render_fps(
+            len(ugv_manager.agents),
+            simulation_speed,
+            simulation_paused,
         )
-        airport_map.draw(screen, map_font, map_viewport)
+        render_interval_s = 1.0 / render_fps
+        if render_time_accumulator_s + 1e-12 < render_interval_s:
+            continue
+        render_time_accumulator_s %= render_interval_s
+
+        screen.blit(map_background, (0, 0))
         draw_neighbor_links(screen, airport_map, ugv)
         for agent in ugv_manager.agents:
             if agent.agent_id != controlled_agent_id:
@@ -408,7 +651,12 @@ def main() -> None:
         else:
             area_text = "地图外"
 
-        mode_text = "手动接管UGV-0" if manual_control_active else "20车自主移动"
+        if simulation_paused:
+            mode_text = "已暂停"
+        elif manual_control_active:
+            mode_text = "手动接管UGV-0"
+        else:
+            mode_text = "20车自主移动"
         draw_sidebar(
             screen,
             sidebar_rect,
@@ -417,6 +665,8 @@ def main() -> None:
             ugv_manager,
             ugv,
             simulation_time_s,
+            simulation_speed,
+            simulation_paused,
             mode_text,
             mouse_world,
             inside_map,

@@ -18,13 +18,25 @@ SIDEBAR_MIN_WIDTH_PX = 200
 SIDEBAR_MAX_WIDTH_PX = 340
 
 FPS = 60
+MIN_RENDER_FPS = 15
+# 节点数×倍速不超过此负载时保持60帧；超过后只降低绘制频率，
+# 不减少任何固定仿真时间步。
+FULL_RATE_RENDER_LOAD = 1000.0
 WINDOW_TITLE = "Airport Ant Swarm Simulation - Step 2: Local Neighborhoods"
 
 # 仿真时间与随机性配置
 SIMULATION_DT_S = 0.1
 MAX_FRAME_TIME_S = 0.25
+SIMULATION_SPEED_OPTIONS = (0.5, 1.0, 2.0, 5.0, 10.0, 20.0)
+DEFAULT_SIMULATION_SPEED = 1.0
 RANDOM_SEED = 42
 INITIAL_UGV_COUNT = 20
+
+# 空间网格与局部邻居更新参数。
+# 邻居表每3.0仿真秒刷新一次；车辆策略只能读取自己的局部表。
+# 该周期可按实验精度要求调小，但会增加高倍速下的计算负载。
+NEIGHBOR_GRID_CELL_SIZE_M = 60.0
+NEIGHBOR_UPDATE_INTERVAL_S = 3.0
 
 # 初期无人车运动学参数
 UGV_RADIUS_M = 1.0
@@ -34,6 +46,7 @@ UGV_MAX_TURN_RATE_DEG_S = 45.0
 UGV_SENSING_RANGE_M = 60.0
 UGV_COMMUNICATION_RANGE_M = 120.0
 UGV_LOCAL_HISTORY_LENGTH = 50
+UGV_HISTORY_SAMPLE_INTERVAL_S = 0.5
 UGV_INITIAL_HEADING_DEG = -90.0
 UGV_DEPLOYMENT_SPACING_M = 22.0
 UGV_COLLISION_CLEARANCE_M = 1.0
@@ -78,6 +91,9 @@ COLORS = {
     "runway_mark": (240, 240, 235),
     "text": (30, 38, 46),
     "panel": (245, 247, 249),
+    "button": (225, 231, 234),
+    "button_active": (71, 130, 145),
+    "button_active_text": (255, 255, 255),
 }
 
 # 不同地面的相对移动代价。数值越小，后续路径选择越倾向该区域。

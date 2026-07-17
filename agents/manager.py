@@ -7,11 +7,12 @@ from typing import Dict, List, Optional, Set, Tuple
 from agents.ugv import UGV, UGVMotionProposal
 from airport_map import AirportMap
 from communication.neighborhood import (
-    BruteForceNeighborSearch,
     NeighborSearch,
+    SpatialHashNeighborSearch,
 )
 from config import (
     INITIAL_UGV_COUNT,
+    NEIGHBOR_UPDATE_INTERVAL_S,
     RANDOM_SEED,
     UGV_DEPLOYMENT_SPACING_M,
     UGV_COLLISION_CLEARANCE_M,
@@ -27,10 +28,15 @@ class UGVManager:
         airport_map: AirportMap,
         random_seed: int = RANDOM_SEED,
         neighbor_search: Optional[NeighborSearch] = None,
+        neighbor_update_interval_s: float = NEIGHBOR_UPDATE_INTERVAL_S,
     ) -> None:
+        if neighbor_update_interval_s <= 0.0:
+            raise ValueError("neighbor_update_interval_s必须大于0")
         self.airport_map = airport_map
         self.random_seed = random_seed
-        self.neighbor_search = neighbor_search or BruteForceNeighborSearch()
+        self.neighbor_search = neighbor_search or SpatialHashNeighborSearch()
+        self.neighbor_update_interval_s = neighbor_update_interval_s
+        self._neighbor_time_accumulator_s = 0.0
         self.agents: List[UGV] = []
         self.last_collision_agent_ids: Set[int] = set()
         self.last_map_blocked_agent_ids: Set[int] = set()
@@ -70,6 +76,7 @@ class UGVManager:
         self.last_map_blocked_agent_ids.clear()
         self.total_collision_blocks = 0
         self.total_map_blocks = 0
+        self._neighbor_time_accumulator_s = 0.0
         self.refresh_neighborhoods()
         return self.agents
 
@@ -140,7 +147,13 @@ class UGVManager:
 
         self.total_map_blocks += len(self.last_map_blocked_agent_ids)
         self.total_collision_blocks += len(self.last_collision_agent_ids)
-        self.refresh_neighborhoods()
+        self._neighbor_time_accumulator_s += delta_time_s
+        if (
+            self._neighbor_time_accumulator_s + 1e-12
+            >= self.neighbor_update_interval_s
+        ):
+            self.refresh_neighborhoods()
+            self._neighbor_time_accumulator_s %= self.neighbor_update_interval_s
 
     def refresh_neighborhoods(self) -> None:
         """由仿真管理器计算全局距离，只向各车写入自己的局部结果。"""
@@ -160,6 +173,10 @@ class UGVManager:
             for agent in self.agents
         }
         ordered_ids = sorted(agents_by_id)
+        candidate_pairs = self._collision_candidate_pairs(
+            agents_by_id,
+            proposals,
+        )
         blocked_ids = {
             agent_id
             for agent_id, proposal in proposals.items()
@@ -178,40 +195,83 @@ class UGVManager:
                 for agent_id in ordered_ids
             }
 
-            for index, first_id in enumerate(ordered_ids):
+            for first_id, second_id in candidate_pairs:
                 first = agents_by_id[first_id]
-                for second_id in ordered_ids[index + 1:]:
-                    second = agents_by_id[second_id]
-                    minimum_distance = (
-                        first.radius_m
-                        + second.radius_m
-                        + UGV_COLLISION_CLEARANCE_M
-                    )
-                    if not self._motions_conflict(
-                        first.position,
-                        final_positions[first_id],
-                        second.position,
-                        final_positions[second_id],
-                        minimum_distance,
-                    ):
-                        continue
+                second = agents_by_id[second_id]
+                minimum_distance = (
+                    first.radius_m
+                    + second.radius_m
+                    + UGV_COLLISION_CLEARANCE_M
+                )
+                if not self._motions_conflict(
+                    first.position,
+                    final_positions[first_id],
+                    second.position,
+                    final_positions[second_id],
+                    minimum_distance,
+                ):
+                    continue
 
-                    if (
-                        first_id not in blocked_ids
-                        and final_positions[first_id] != first.position
-                    ):
-                        newly_blocked.add(first_id)
-                    if (
-                        second_id not in blocked_ids
-                        and final_positions[second_id] != second.position
-                    ):
-                        newly_blocked.add(second_id)
+                if (
+                    first_id not in blocked_ids
+                    and final_positions[first_id] != first.position
+                ):
+                    newly_blocked.add(first_id)
+                if (
+                    second_id not in blocked_ids
+                    and final_positions[second_id] != second.position
+                ):
+                    newly_blocked.add(second_id)
 
             if not newly_blocked:
                 return collision_ids
 
             collision_ids.update(newly_blocked)
             blocked_ids.update(newly_blocked)
+
+    @staticmethod
+    def _collision_candidate_pairs(
+        agents_by_id: Dict[int, UGV],
+        proposals: Dict[int, UGVMotionProposal],
+    ) -> Tuple[Tuple[int, int], ...]:
+        """用扫描线筛出运动轨迹包围盒可能重叠的车辆对。"""
+
+        bounds = []
+        for agent_id, agent in agents_by_id.items():
+            proposal = proposals[agent_id]
+            expansion = (
+                agent.radius_m + UGV_COLLISION_CLEARANCE_M / 2.0
+            )
+            bounds.append(
+                (
+                    min(agent.position[0], proposal.position[0]) - expansion,
+                    min(agent.position[1], proposal.position[1]) - expansion,
+                    max(agent.position[0], proposal.position[0]) + expansion,
+                    max(agent.position[1], proposal.position[1]) + expansion,
+                    agent_id,
+                )
+            )
+        bounds.sort(key=lambda item: (item[0], item[4]))
+
+        candidate_pairs = []
+        for index, first in enumerate(bounds):
+            first_minimum_y = first[1]
+            first_maximum_x = first[2]
+            first_maximum_y = first[3]
+            first_id = first[4]
+            for second_index in range(index + 1, len(bounds)):
+                second = bounds[second_index]
+                if second[0] > first_maximum_x:
+                    break
+                if (
+                    second[1] > first_maximum_y
+                    or second[3] < first_minimum_y
+                ):
+                    continue
+                candidate_pairs.append(
+                    (min(first_id, second[4]), max(first_id, second[4]))
+                )
+        return tuple(sorted(candidate_pairs))
 
     @staticmethod
     def _motions_conflict(

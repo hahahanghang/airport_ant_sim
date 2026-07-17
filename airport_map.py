@@ -228,6 +228,23 @@ class AirportMap:
                 if region.passability == Passability.BLOCKED
             ],
         ]
+        # 通行检测是每辆车每个时间步都会调用的热点。预先保存静态建筑
+        # 边界，避免在循环中反复做属性查找和右/下边界加法。
+        self._blocked_bounds = tuple(
+            (
+                region.x,
+                region.y,
+                region.x + region.width,
+                region.y + region.height,
+            )
+            for region in self.blocked_regions
+        )
+        self._runway_bounds = (
+            self.runway.x,
+            self.runway.y,
+            self.runway.x + self.runway.width,
+            self.runway.y + self.runway.height,
+        )
         self.preferred_drivable_regions: List[RectRegion] = [
             *self.perimeter_roads,
             *self.service_roads,
@@ -265,11 +282,58 @@ class AirportMap:
     ) -> bool:
         """判断以无人车为圆心的包围圆是否接触矩形区域。"""
 
+        return AirportMap._circle_intersects_bounds(
+            point,
+            radius,
+            (
+                region.x,
+                region.y,
+                region.x + region.width,
+                region.y + region.height,
+            ),
+        )
+
+    @staticmethod
+    def _circle_intersects_bounds(
+        point: Tuple[float, float],
+        radius: float,
+        bounds: Tuple[float, float, float, float],
+    ) -> bool:
+        """使用预计算边界判断包围圆是否接触矩形。"""
+
         x, y = point
-        nearest_x = max(region.x, min(x, region.x + region.width))
-        nearest_y = max(region.y, min(y, region.y + region.height))
-        distance_squared = (x - nearest_x) ** 2 + (y - nearest_y) ** 2
-        return distance_squared <= radius ** 2
+        left, top, right, bottom = bounds
+
+        if (
+            x + radius < left
+            or x - radius > right
+            or y + radius < top
+            or y - radius > bottom
+        ):
+            return False
+
+        if x < left:
+            distance_x = left - x
+        elif x > right:
+            distance_x = x - right
+        else:
+            distance_x = 0.0
+        if distance_x > radius:
+            return False
+
+        if y < top:
+            distance_y = top - y
+        elif y > bottom:
+            distance_y = y - bottom
+        else:
+            distance_y = 0.0
+        if distance_y > radius:
+            return False
+
+        return (
+            distance_x * distance_x + distance_y * distance_y
+            <= radius * radius
+        )
 
     def get_passability(
         self,
@@ -288,11 +352,15 @@ class AirportMap:
         if not (minimum <= x <= maximum_x and minimum <= y <= maximum_y):
             return Passability.BLOCKED
 
-        for region in self.blocked_regions:
-            if self._circle_intersects_region(point, vehicle_radius, region):
+        for bounds in self._blocked_bounds:
+            if self._circle_intersects_bounds(point, vehicle_radius, bounds):
                 return Passability.BLOCKED
 
-        if self._circle_intersects_region(point, vehicle_radius, self.runway):
+        if self._circle_intersects_bounds(
+            point,
+            vehicle_radius,
+            self._runway_bounds,
+        ):
             return Passability.RESTRICTED
 
         return Passability.DRIVABLE

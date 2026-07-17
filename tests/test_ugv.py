@@ -7,6 +7,7 @@ from agents.ugv import UGV
 from airport_map import AirportMap, Passability
 from config import (
     UGV_LOCAL_HISTORY_LENGTH,
+    UGV_HISTORY_SAMPLE_INTERVAL_S,
     UGV_MAX_ACCELERATION_MPS2,
     UGV_MAX_SPEED_MPS,
     UGV_MAX_TURN_RATE_DEG_S,
@@ -173,7 +174,12 @@ class UGVKinematicsTests(unittest.TestCase):
 
     def test_local_history_has_fixed_length(self) -> None:
         ugv = UGV(0, (1500.0, 2200.0), 0.0)
-        for step in range(UGV_LOCAL_HISTORY_LENGTH + 10):
+        step_count = round(
+            (UGV_LOCAL_HISTORY_LENGTH + 10)
+            * UGV_HISTORY_SAMPLE_INTERVAL_S
+            / 0.1
+        )
+        for step in range(step_count):
             ugv.update(
                 0.1,
                 self.airport_map,

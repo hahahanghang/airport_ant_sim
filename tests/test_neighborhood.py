@@ -1,11 +1,15 @@
 """局部感知邻居和通信邻居搜索测试。"""
 
+import random
 import unittest
 
 from agents.manager import UGVManager
 from agents.ugv import UGV
 from airport_map import AirportMap
-from communication.neighborhood import BruteForceNeighborSearch
+from communication.neighborhood import (
+    BruteForceNeighborSearch,
+    SpatialHashNeighborSearch,
+)
 from config import (
     UGV_COMMUNICATION_RANGE_M,
     UGV_SENSING_RANGE_M,
@@ -122,7 +126,10 @@ class NeighborSearchTests(unittest.TestCase):
         )
 
     def test_manager_refreshes_neighbors_after_motion_commit(self) -> None:
-        manager = UGVManager(AirportMap())
+        manager = UGVManager(
+            AirportMap(),
+            neighbor_update_interval_s=1.0,
+        )
         first, second = manager.deploy_in_staging(2)
         first.position = (1500.0, 2200.0)
         first.heading_rad = 0.0
@@ -141,6 +148,39 @@ class NeighborSearchTests(unittest.TestCase):
         self.assertLessEqual(
             first.sensed_neighbors[second.agent_id].distance_m,
             first.sensing_range_m,
+        )
+
+    def test_spatial_hash_matches_brute_force_for_200_agents(self) -> None:
+        random_generator = random.Random(20260717)
+        agents = [
+            UGV(
+                agent_id=agent_id,
+                position=(
+                    random_generator.uniform(0.0, 3000.0),
+                    random_generator.uniform(0.0, 3000.0),
+                ),
+                heading_rad=0.0,
+                sensing_range_m=random_generator.choice(
+                    (30.0, 60.0, 90.0)
+                ),
+                communication_range_m=random_generator.choice(
+                    (80.0, 120.0, 160.0)
+                ),
+            )
+            for agent_id in range(200)
+        ]
+
+        expected = BruteForceNeighborSearch().search(agents)
+        actual = SpatialHashNeighborSearch().search(agents)
+
+        self.assertEqual(actual, expected)
+
+    def test_manager_uses_spatial_hash_by_default(self) -> None:
+        manager = UGVManager(AirportMap())
+
+        self.assertIsInstance(
+            manager.neighbor_search,
+            SpatialHashNeighborSearch,
         )
 
     def test_50_and_200_agent_searches_complete(self) -> None:
