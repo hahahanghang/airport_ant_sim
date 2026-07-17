@@ -3,7 +3,7 @@
 from dataclasses import dataclass
 from enum import Enum
 import math
-from typing import List, Tuple
+from typing import List, Optional, Tuple
 
 import pygame
 
@@ -325,14 +325,24 @@ class AirportMap:
 
         return OPEN_AREA_MOVEMENT_COST
 
-    def update_viewport(self, width: int, height: int) -> None:
-        """保持地图比例，并根据当前窗口尺寸居中显示。"""
+    def update_viewport(
+        self,
+        width: int,
+        height: int,
+        origin_x: int = 0,
+        origin_y: int = 0,
+    ) -> None:
+        """保持地图比例，并在指定屏幕区域内居中显示。"""
 
         scale = min(width / WORLD_WIDTH_M, height / WORLD_HEIGHT_M)
         self.scale_x = scale
         self.scale_y = scale
-        self.offset_x = (width - WORLD_WIDTH_M * scale) / 2.0
-        self.offset_y = (height - WORLD_HEIGHT_M * scale) / 2.0
+        self.offset_x = (
+            origin_x + (width - WORLD_WIDTH_M * scale) / 2.0
+        )
+        self.offset_y = (
+            origin_y + (height - WORLD_HEIGHT_M * scale) / 2.0
+        )
 
     def world_to_screen_point(
         self,
@@ -497,14 +507,7 @@ class AirportMap:
     ) -> None:
         """绘制地图图例。"""
 
-        legend_items = [
-            ("道路：可通行", COLORS["road"]),
-            ("滑行道 / 停机坪", COLORS["taxiway"]),
-            ("跑道：限制通行", COLORS["runway"]),
-            ("开放实验区", COLORS["experiment"]),
-            ("无人车待命区", COLORS["staging"]),
-            ("建筑：不可通行", COLORS["building"]),
-        ]
+        legend_items = self.legend_items()
 
         padding = max(8, font.get_height() // 2)
         row_height = max(18, font.get_height() + 4)
@@ -512,7 +515,12 @@ class AirportMap:
         text_width = max(font.size(name)[0] for name, _ in legend_items)
         panel_width = padding * 3 + swatch_width + text_width
         panel_height = padding * 2 + font.get_height() + row_height * len(legend_items)
-        panel = pygame.Rect(15, 15, panel_width, panel_height)
+        panel = pygame.Rect(
+            round(self.offset_x) + 15,
+            round(self.offset_y) + 15,
+            panel_width,
+            panel_height,
+        )
         pygame.draw.rect(surface, COLORS["panel"], panel, border_radius=5)
         pygame.draw.rect(surface, COLORS["fence"], panel, width=1, border_radius=5)
 
@@ -530,14 +538,36 @@ class AirportMap:
             text = font.render(name, True, COLORS["text"])
             surface.blit(text, (panel.x + padding * 2 + swatch_width, y - 2))
 
+    @staticmethod
+    def legend_items() -> Tuple[Tuple[str, Tuple[int, int, int]], ...]:
+        """返回可供左侧栏或地图使用的统一图例内容。"""
+
+        return (
+            ("道路：可通行", COLORS["road"]),
+            ("滑行道 / 停机坪", COLORS["taxiway"]),
+            ("跑道：限制通行", COLORS["runway"]),
+            ("开放实验区", COLORS["experiment"]),
+            ("无人车待命区", COLORS["staging"]),
+            ("建筑：不可通行", COLORS["building"]),
+        )
+
     def draw(
         self,
         surface: pygame.Surface,
         font: pygame.font.Font,
+        viewport: Optional[pygame.Rect] = None,
+        show_legend: bool = False,
     ) -> None:
-        """绘制完整机场地图。"""
+        """在完整窗口或指定视口内绘制机场地图。"""
 
-        self.update_viewport(*surface.get_size())
+        if viewport is None:
+            viewport = surface.get_rect()
+        self.update_viewport(
+            viewport.width,
+            viewport.height,
+            viewport.x,
+            viewport.y,
+        )
         surface.fill(COLORS["background"])
 
         for area in self.experiment_areas:
@@ -635,4 +665,5 @@ class AirportMap:
             )
 
         self.draw_perimeter(surface)
-        self.draw_legend(surface, font)
+        if show_legend:
+            self.draw_legend(surface, font)

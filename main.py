@@ -13,6 +13,9 @@ from config import (
     FPS,
     INITIAL_UGV_COUNT,
     MAX_FRAME_TIME_S,
+    SIDEBAR_MAX_WIDTH_PX,
+    SIDEBAR_MIN_WIDTH_PX,
+    SIDEBAR_WIDTH_RATIO,
     SIMULATION_DT_S,
     UGV_AUTONOMOUS_ENABLED,
     UGV_MARKER_HALF_WIDTH_PX,
@@ -49,6 +52,36 @@ def create_interface_fonts(size: tuple[int, int]) -> tuple[pygame.font.Font, pyg
     return create_font(map_size), create_font(status_size)
 
 
+def calculate_interface_layout(
+    size: tuple[int, int],
+) -> tuple[pygame.Rect, pygame.Rect]:
+    """把窗口拆成互不重叠的左侧状态栏和右侧地图视口。"""
+
+    screen_width, screen_height = size
+    reserved_width = max(
+        SIDEBAR_MIN_WIDTH_PX,
+        min(
+            SIDEBAR_MAX_WIDTH_PX,
+            round(screen_width * SIDEBAR_WIDTH_RATIO),
+        ),
+    )
+    reserved_width = min(reserved_width, max(1, screen_width // 2))
+    margin = max(10, min(screen_width, screen_height) // 100)
+    sidebar_rect = pygame.Rect(
+        margin,
+        margin,
+        max(1, reserved_width - margin * 2),
+        max(1, screen_height - margin * 2),
+    )
+    map_viewport = pygame.Rect(
+        reserved_width,
+        0,
+        max(1, screen_width - reserved_width),
+        screen_height,
+    )
+    return sidebar_rect, map_viewport
+
+
 def draw_ugv(
     surface: pygame.Surface,
     airport_map: AirportMap,
@@ -59,11 +92,22 @@ def draw_ugv(
     """用带航向的三角形绘制无人车，高亮车辆额外显示感知范围。"""
 
     center = airport_map.world_to_screen_point(ugv.position)
+    communication_radius_px = max(
+        1,
+        round(ugv.communication_range_m * airport_map.scale_x),
+    )
     sensing_radius_px = max(
         1,
         round(ugv.sensing_range_m * airport_map.scale_x),
     )
     if selected:
+        pygame.draw.circle(
+            surface,
+            COLORS["communication_range"],
+            center,
+            communication_radius_px,
+            width=1,
+        )
         pygame.draw.circle(
             surface,
             COLORS["sensing_range"],
@@ -109,6 +153,144 @@ def draw_ugv(
             midleft=(center[0] + max(8, sensing_radius_px) + 4, center[1])
         )
         surface.blit(label, label_rect)
+
+
+def draw_neighbor_links(
+    surface: pygame.Surface,
+    airport_map: AirportMap,
+    ugv: UGV,
+) -> None:
+    """只根据高亮车辆保存的局部观测绘制邻居连线。"""
+
+    start = airport_map.world_to_screen_point(ugv.position)
+    for observation in ugv.communication_neighbors.values():
+        target_world = (
+            ugv.position[0] + observation.relative_position[0],
+            ugv.position[1] + observation.relative_position[1],
+        )
+        pygame.draw.line(
+            surface,
+            COLORS["communication_link"],
+            start,
+            airport_map.world_to_screen_point(target_world),
+            width=1,
+        )
+
+    for observation in ugv.sensed_neighbors.values():
+        target_world = (
+            ugv.position[0] + observation.relative_position[0],
+            ugv.position[1] + observation.relative_position[1],
+        )
+        pygame.draw.line(
+            surface,
+            COLORS["sensing_range"],
+            start,
+            airport_map.world_to_screen_point(target_world),
+            width=2,
+        )
+
+
+def draw_sidebar(
+    surface: pygame.Surface,
+    sidebar_rect: pygame.Rect,
+    font: pygame.font.Font,
+    airport_map: AirportMap,
+    ugv_manager: UGVManager,
+    ugv: UGV,
+    simulation_time_s: float,
+    mode_text: str,
+    mouse_world: tuple[float, float],
+    inside_map: bool,
+    area_text: str,
+) -> None:
+    """在左侧独立区域纵向绘制仿真状态，不覆盖机场地图。"""
+
+    pygame.draw.rect(
+        surface,
+        COLORS["panel"],
+        sidebar_rect,
+        border_radius=5,
+    )
+    pygame.draw.rect(
+        surface,
+        COLORS["fence"],
+        sidebar_rect,
+        width=1,
+        border_radius=5,
+    )
+
+    lines = [
+        "仿真状态",
+        f"模式: {mode_text}",
+        f"节点/时间: {len(ugv_manager.agents)} / {simulation_time_s:.1f}s",
+        "",
+        f"高亮: UGV-{ugv.agent_id}",
+        f"位置: {ugv.position[0]:.0f}, {ugv.position[1]:.0f}m",
+        f"速度: {ugv.speed_mps:.1f} m/s",
+        f"感知/通信范围: {ugv.sensing_range_m:.0f}/{ugv.communication_range_m:.0f}m",
+        f"感知/通信邻居: {len(ugv.sensed_neighbors)}/"
+        f"{len(ugv.communication_neighbors)}",
+        f"车辆/地图阻挡: {ugv_manager.total_collision_blocks}/"
+        f"{ugv_manager.total_map_blocks}",
+        "",
+    ]
+    if inside_map:
+        lines.extend(
+            [
+                f"鼠标: {mouse_world[0]:.0f}, {mouse_world[1]:.0f}m",
+                f"区域: {area_text}",
+            ]
+        )
+    else:
+        lines.append("鼠标: 地图外")
+    lines.extend(
+        [
+            "",
+            "方向键: 临时接管",
+            "S: 截图  ESC: 退出",
+            "",
+        ]
+    )
+
+    padding = max(8, font.get_height() // 2)
+    line_gap = max(1, font.get_height() // 7)
+    y = sidebar_rect.y + padding
+    for line in lines:
+        if not line:
+            y += max(4, line_gap * 2)
+            continue
+        text_surface = font.render(line, True, COLORS["text"])
+        if y + text_surface.get_height() > sidebar_rect.bottom - padding:
+            break
+        surface.blit(text_surface, (sidebar_rect.x + padding, y))
+        y += text_surface.get_height() + line_gap
+
+    legend_title = font.render("地图图例", True, COLORS["text"])
+    if y + legend_title.get_height() <= sidebar_rect.bottom - padding:
+        surface.blit(legend_title, (sidebar_rect.x + padding, y))
+        y += legend_title.get_height() + line_gap
+
+    swatch_width = max(14, font.get_height())
+    swatch_height = max(9, font.get_height() - 3)
+    for name, color in airport_map.legend_items():
+        if y + font.get_height() > sidebar_rect.bottom - padding:
+            break
+        pygame.draw.rect(
+            surface,
+            color,
+            pygame.Rect(
+                sidebar_rect.x + padding,
+                y + 1,
+                swatch_width,
+                swatch_height,
+            ),
+        )
+        text_surface = font.render(name, True, COLORS["text"])
+        surface.blit(
+            text_surface,
+            (sidebar_rect.x + padding + swatch_width + padding, y),
+        )
+        y += max(text_surface.get_height(), swatch_height) + line_gap
 
 
 def main() -> None:
@@ -198,7 +380,11 @@ def main() -> None:
             )
             time_accumulator_s -= SIMULATION_DT_S
 
-        airport_map.draw(screen, map_font)
+        sidebar_rect, map_viewport = calculate_interface_layout(
+            screen.get_size()
+        )
+        airport_map.draw(screen, map_font, map_viewport)
+        draw_neighbor_links(screen, airport_map, ugv)
         for agent in ugv_manager.agents:
             if agent.agent_id != controlled_agent_id:
                 draw_ugv(screen, airport_map, agent, map_font)
@@ -219,89 +405,22 @@ def main() -> None:
                 area_text = "限制通行"
             else:
                 area_text = "不可通行"
-            coordinate_text = (
-                f"世界坐标: ({mouse_world[0]:.1f} m, {mouse_world[1]:.1f} m) "
-                f"| 区域: {area_text}"
-            )
         else:
-            coordinate_text = "鼠标位于机场地图之外"
+            area_text = "地图外"
 
         mode_text = "手动接管UGV-0" if manual_control_active else "20车自主移动"
-        vehicle_text = (
-            f"节点: {len(ugv_manager.agents)} | 模式: {mode_text} | UGV-{ugv.agent_id}: "
-            f"({ugv.position[0]:.1f}, {ugv.position[1]:.1f}) m "
-            f"| 速度: {ugv.speed_mps:.1f} m/s | 仿真时间: {simulation_time_s:.1f} s "
-            f"| 车辆阻挡: {ugv_manager.total_collision_blocks} "
-            f"| 地图阻挡: {ugv_manager.total_map_blocks} "
-            f"| 方向键临时接管  | S: 保存截图  ESC: 退出"
-        )
-
-        screen_width, screen_height = screen.get_size()
-        margin = max(10, min(screen_width, screen_height) // 100)
-        panel_padding = max(8, status_font.get_height() // 2)
-        panel_height = status_font.get_height() * 2 + panel_padding * 3
-
-        status_panel = pygame.Rect(
-            margin,
-            screen_height - margin - panel_height,
-            screen_width - margin * 2,
-            panel_height,
-        )
-
-        available_width = status_panel.width - panel_padding * 2
-        if status_font.size(coordinate_text)[0] > available_width:
-            if inside_map:
-                coordinate_text = (
-                    f"鼠标: ({mouse_world[0]:.0f}, {mouse_world[1]:.0f}) m "
-                    f"| {area_text}"
-                )
-            else:
-                coordinate_text = "鼠标位于地图外"
-        if status_font.size(vehicle_text)[0] > available_width:
-            vehicle_text = (
-                f"{len(ugv_manager.agents)}辆 | {mode_text} | UGV-{ugv.agent_id} "
-                f"| {ugv.speed_mps:.1f} m/s "
-                f"| 车阻挡: {ugv_manager.total_collision_blocks} "
-                f"| 地图阻挡: {ugv_manager.total_map_blocks} "
-                f"| 方向键接管 | S: 保存 | ESC: 退出"
-            )
-
-        coordinate_surface = status_font.render(
-            coordinate_text,
-            True,
-            COLORS["text"],
-        )
-        vehicle_surface = status_font.render(
-            vehicle_text,
-            True,
-            COLORS["text"],
-        )
-
-        pygame.draw.rect(
+        draw_sidebar(
             screen,
-            COLORS["panel"],
-            status_panel,
-            border_radius=4,
-        )
-        pygame.draw.rect(
-            screen,
-            COLORS["fence"],
-            status_panel,
-            width=1,
-            border_radius=4,
-        )
-
-        text_x = status_panel.x + panel_padding
-        screen.blit(
-            coordinate_surface,
-            (text_x, status_panel.y + panel_padding),
-        )
-        screen.blit(
-            vehicle_surface,
-            (
-                text_x,
-                status_panel.y + panel_padding * 2 + status_font.get_height(),
-            ),
+            sidebar_rect,
+            status_font,
+            airport_map,
+            ugv_manager,
+            ugv,
+            simulation_time_s,
+            mode_text,
+            mouse_world,
+            inside_map,
+            area_text,
         )
 
         pygame.display.flip()

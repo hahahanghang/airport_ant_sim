@@ -12,8 +12,13 @@ WINDOW_RESIZABLE = True
 WINDOW_MIN_WIDTH_PX = 640
 WINDOW_MIN_HEIGHT_PX = 480
 
+# 左侧状态栏独占窗口宽度，机场地图只在右侧剩余区域绘制。
+SIDEBAR_WIDTH_RATIO = 0.20
+SIDEBAR_MIN_WIDTH_PX = 200
+SIDEBAR_MAX_WIDTH_PX = 340
+
 FPS = 60
-WINDOW_TITLE = "Airport Ant Swarm Simulation - Step 2: Autonomous Motion"
+WINDOW_TITLE = "Airport Ant Swarm Simulation - Step 2: Local Neighborhoods"
 
 # 仿真时间与随机性配置
 SIMULATION_DT_S = 0.1
@@ -66,6 +71,8 @@ COLORS = {
     "ugv_idle": (45, 104, 120),
     "ugv_heading": (255, 246, 214),
     "sensing_range": (208, 96, 75),
+    "communication_range": (70, 117, 168),
+    "communication_link": (105, 144, 184),
     "gate": (71, 130, 145),
     "fence": (45, 59, 72),
     "runway_mark": (240, 240, 235),

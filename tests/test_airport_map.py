@@ -106,6 +106,24 @@ class AirportMapPassabilityTests(unittest.TestCase):
         }
         self.assertTrue(expected_names.issubset(building_names))
 
+    def test_offset_viewport_preserves_scale_and_coordinate_round_trip(self) -> None:
+        self.airport_map.update_viewport(
+            width=400,
+            height=300,
+            origin_x=200,
+            origin_y=50,
+        )
+
+        self.assertEqual(self.airport_map.scale_x, 0.1)
+        self.assertEqual(self.airport_map.scale_y, 0.1)
+        self.assertEqual(
+            self.airport_map.world_to_screen_point((1500.0, 1500.0)),
+            (400, 200),
+        )
+        world_point = self.airport_map.screen_to_world_point((400, 200))
+        self.assertAlmostEqual(world_point[0], 1500.0)
+        self.assertAlmostEqual(world_point[1], 1500.0)
+
 
 if __name__ == "__main__":
     unittest.main()

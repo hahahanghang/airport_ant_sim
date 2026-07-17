@@ -6,6 +6,10 @@ from typing import Dict, List, Optional, Set, Tuple
 
 from agents.ugv import UGV, UGVMotionProposal
 from airport_map import AirportMap
+from communication.neighborhood import (
+    BruteForceNeighborSearch,
+    NeighborSearch,
+)
 from config import (
     INITIAL_UGV_COUNT,
     RANDOM_SEED,
@@ -22,9 +26,11 @@ class UGVManager:
         self,
         airport_map: AirportMap,
         random_seed: int = RANDOM_SEED,
+        neighbor_search: Optional[NeighborSearch] = None,
     ) -> None:
         self.airport_map = airport_map
         self.random_seed = random_seed
+        self.neighbor_search = neighbor_search or BruteForceNeighborSearch()
         self.agents: List[UGV] = []
         self.last_collision_agent_ids: Set[int] = set()
         self.last_map_blocked_agent_ids: Set[int] = set()
@@ -64,6 +70,7 @@ class UGVManager:
         self.last_map_blocked_agent_ids.clear()
         self.total_collision_blocks = 0
         self.total_map_blocks = 0
+        self.refresh_neighborhoods()
         return self.agents
 
     def get_agent(self, agent_id: int) -> UGV:
@@ -133,6 +140,14 @@ class UGVManager:
 
         self.total_map_blocks += len(self.last_map_blocked_agent_ids)
         self.total_collision_blocks += len(self.last_collision_agent_ids)
+        self.refresh_neighborhoods()
+
+    def refresh_neighborhoods(self) -> None:
+        """由仿真管理器计算全局距离，只向各车写入自己的局部结果。"""
+
+        neighborhoods = self.neighbor_search.search(self.agents)
+        for ugv in self.agents:
+            ugv.set_local_neighborhood(neighborhoods[ugv.agent_id])
 
     def _find_collision_blocks(
         self,

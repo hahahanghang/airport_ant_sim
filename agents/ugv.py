@@ -6,6 +6,7 @@ import math
 from typing import Callable, Deque, Dict, Optional, Set, Tuple
 
 from airport_map import AirportMap
+from communication.neighborhood import LocalNeighborhood, NeighborObservation
 from config import (
     UGV_AUTONOMOUS_ACCELERATION_MPS2,
     UGV_AUTONOMOUS_CRUISE_SPEED_MPS,
@@ -62,6 +63,12 @@ class UGV:
     communication_range_m: float = UGV_COMMUNICATION_RANGE_M
     radius_m: float = UGV_RADIUS_M
     neighbors: Set[int] = field(default_factory=set)
+    sensed_neighbors: Dict[int, NeighborObservation] = field(
+        default_factory=dict
+    )
+    communication_neighbors: Dict[int, NeighborObservation] = field(
+        default_factory=dict
+    )
     response_thresholds: Dict[str, float] = field(default_factory=dict)
     local_pheromone: Dict[str, float] = field(default_factory=dict)
     local_history: Deque[UGVHistoryEntry] = field(
@@ -78,6 +85,10 @@ class UGV:
             raise ValueError("agent_id不能为负数")
         if self.radius_m <= 0.0:
             raise ValueError("radius_m必须大于0")
+        if self.sensing_range_m <= 0.0:
+            raise ValueError("sensing_range_m必须大于0")
+        if self.communication_range_m <= 0.0:
+            raise ValueError("communication_range_m必须大于0")
         if not 0.0 <= self.energy_level <= 1.0:
             raise ValueError("energy_level必须位于0到1之间")
         if not 0.0 <= self.speed_mps <= UGV_MAX_SPEED_MPS:
@@ -99,6 +110,24 @@ class UGV:
         """返回当前航向对应的二维单位向量。"""
 
         return math.cos(self.heading_rad), math.sin(self.heading_rad)
+
+    def set_local_neighborhood(
+        self,
+        neighborhood: LocalNeighborhood,
+    ) -> None:
+        """只接收属于本车的局部邻居观测，不接收全局车辆表。"""
+
+        self.sensed_neighbors = {
+            observation.agent_id: observation
+            for observation in neighborhood.sensed
+        }
+        self.communication_neighbors = {
+            observation.agent_id: observation
+            for observation in neighborhood.communicable
+        }
+        self.neighbors = (
+            set(self.sensed_neighbors) | set(self.communication_neighbors)
+        )
 
     def autonomous_control(
         self,
