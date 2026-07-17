@@ -11,6 +11,7 @@ from communication.neighborhood import (
     SpatialHashNeighborSearch,
 )
 from config import (
+    COVERAGE_OBSERVATION_INTERVAL_S,
     INITIAL_UGV_COUNT,
     NEIGHBOR_UPDATE_INTERVAL_S,
     RANDOM_SEED,
@@ -18,6 +19,7 @@ from config import (
     UGV_COLLISION_CLEARANCE_M,
     UGV_RADIUS_M,
 )
+from pheromone.field import CoverageField
 
 
 class UGVManager:
@@ -29,14 +31,25 @@ class UGVManager:
         random_seed: int = RANDOM_SEED,
         neighbor_search: Optional[NeighborSearch] = None,
         neighbor_update_interval_s: float = NEIGHBOR_UPDATE_INTERVAL_S,
+        coverage_field: Optional[CoverageField] = None,
+        coverage_observation_interval_s: float = (
+            COVERAGE_OBSERVATION_INTERVAL_S
+        ),
     ) -> None:
         if neighbor_update_interval_s <= 0.0:
             raise ValueError("neighbor_update_interval_s必须大于0")
+        if coverage_observation_interval_s <= 0.0:
+            raise ValueError("coverage_observation_interval_s必须大于0")
         self.airport_map = airport_map
         self.random_seed = random_seed
         self.neighbor_search = neighbor_search or SpatialHashNeighborSearch()
         self.neighbor_update_interval_s = neighbor_update_interval_s
+        self.coverage_field = coverage_field or CoverageField()
+        self.coverage_observation_interval_s = (
+            coverage_observation_interval_s
+        )
         self._neighbor_time_accumulator_s = 0.0
+        self._coverage_observation_accumulator_s = 0.0
         self.agents: List[UGV] = []
         self.last_collision_agent_ids: Set[int] = set()
         self.last_map_blocked_agent_ids: Set[int] = set()
@@ -77,7 +90,10 @@ class UGVManager:
         self.total_collision_blocks = 0
         self.total_map_blocks = 0
         self._neighbor_time_accumulator_s = 0.0
+        self._coverage_observation_accumulator_s = 0.0
+        self.coverage_field.reset()
         self.refresh_neighborhoods()
+        self.refresh_local_coverage()
         return self.agents
 
     def get_agent(self, agent_id: int) -> UGV:
@@ -147,6 +163,19 @@ class UGVManager:
 
         self.total_map_blocks += len(self.last_map_blocked_agent_ids)
         self.total_collision_blocks += len(self.last_collision_agent_ids)
+        self.coverage_field.update(
+            delta_time_s,
+            [ugv.position for ugv in self.agents],
+        )
+        self._coverage_observation_accumulator_s += delta_time_s
+        if (
+            self._coverage_observation_accumulator_s + 1e-12
+            >= self.coverage_observation_interval_s
+        ):
+            self.refresh_local_coverage()
+            self._coverage_observation_accumulator_s %= (
+                self.coverage_observation_interval_s
+            )
         self._neighbor_time_accumulator_s += delta_time_s
         if (
             self._neighbor_time_accumulator_s + 1e-12
@@ -161,6 +190,16 @@ class UGVManager:
         neighborhoods = self.neighbor_search.search(self.agents)
         for ugv in self.agents:
             ugv.set_local_neighborhood(neighborhoods[ugv.agent_id])
+
+    def refresh_local_coverage(self) -> None:
+        """只向每辆车写入以自身位置和航向为基准的四个覆盖值。"""
+
+        observations = self.coverage_field.observe_many(
+            [ugv.position for ugv in self.agents],
+            [ugv.heading_rad for ugv in self.agents],
+        )
+        for ugv, observation in zip(self.agents, observations):
+            ugv.set_local_coverage(observation)
 
     def _find_collision_blocks(
         self,
@@ -177,6 +216,8 @@ class UGVManager:
             agents_by_id,
             proposals,
         )
+        if not candidate_pairs:
+            return set()
         blocked_ids = {
             agent_id
             for agent_id, proposal in proposals.items()

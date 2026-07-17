@@ -9,6 +9,7 @@ import pygame
 
 from config import (
     COLORS,
+    MAP_COLLISION_GRID_CELL_SIZE_M,
     OPEN_AREA_MOVEMENT_COST,
     PERIMETER_MARGIN_M,
     RESTRICTED_AREA_MOVEMENT_COST,
@@ -245,6 +246,10 @@ class AirportMap:
             self.runway.x + self.runway.width,
             self.runway.y + self.runway.height,
         )
+        self._blocked_bounds_by_cell = self._build_bounds_grid(
+            self._blocked_bounds,
+            MAP_COLLISION_GRID_CELL_SIZE_M,
+        )
         self.preferred_drivable_regions: List[RectRegion] = [
             *self.perimeter_roads,
             *self.service_roads,
@@ -335,6 +340,27 @@ class AirportMap:
             <= radius * radius
         )
 
+    @staticmethod
+    def _build_bounds_grid(
+        bounds_collection: Tuple[Tuple[float, float, float, float], ...],
+        cell_size_m: float,
+    ) -> dict[Tuple[int, int], list[Tuple[float, float, float, float]]]:
+        """把静态建筑边界预先放入粗网格，供高频通行检测查询。"""
+
+        grid: dict[
+            Tuple[int, int],
+            list[Tuple[float, float, float, float]],
+        ] = {}
+        for bounds in bounds_collection:
+            minimum_cell_x = math.floor(bounds[0] / cell_size_m)
+            minimum_cell_y = math.floor(bounds[1] / cell_size_m)
+            maximum_cell_x = math.floor(bounds[2] / cell_size_m)
+            maximum_cell_y = math.floor(bounds[3] / cell_size_m)
+            for cell_y in range(minimum_cell_y, maximum_cell_y + 1):
+                for cell_x in range(minimum_cell_x, maximum_cell_x + 1):
+                    grid.setdefault((cell_x, cell_y), []).append(bounds)
+        return grid
+
     def get_passability(
         self,
         point: Tuple[float, float],
@@ -352,9 +378,30 @@ class AirportMap:
         if not (minimum <= x <= maximum_x and minimum <= y <= maximum_y):
             return Passability.BLOCKED
 
-        for bounds in self._blocked_bounds:
-            if self._circle_intersects_bounds(point, vehicle_radius, bounds):
-                return Passability.BLOCKED
+        minimum_cell_x = math.floor(
+            (x - vehicle_radius) / MAP_COLLISION_GRID_CELL_SIZE_M
+        )
+        minimum_cell_y = math.floor(
+            (y - vehicle_radius) / MAP_COLLISION_GRID_CELL_SIZE_M
+        )
+        maximum_cell_x = math.floor(
+            (x + vehicle_radius) / MAP_COLLISION_GRID_CELL_SIZE_M
+        )
+        maximum_cell_y = math.floor(
+            (y + vehicle_radius) / MAP_COLLISION_GRID_CELL_SIZE_M
+        )
+        for cell_y in range(minimum_cell_y, maximum_cell_y + 1):
+            for cell_x in range(minimum_cell_x, maximum_cell_x + 1):
+                for bounds in self._blocked_bounds_by_cell.get(
+                    (cell_x, cell_y),
+                    (),
+                ):
+                    if self._circle_intersects_bounds(
+                        point,
+                        vehicle_radius,
+                        bounds,
+                    ):
+                        return Passability.BLOCKED
 
         if self._circle_intersects_bounds(
             point,

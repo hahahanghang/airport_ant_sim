@@ -4,6 +4,7 @@
 WORLD_WIDTH_M = 3000.0
 WORLD_HEIGHT_M = 3000.0
 PERIMETER_MARGIN_M = 120.0
+MAP_COLLISION_GRID_CELL_SIZE_M = 300.0
 
 # Pygame窗口自适应配置，尺寸单位：像素
 # 默认按主显示器的桌面分辨率启动，并允许用户拖动调整窗口大小。
@@ -22,7 +23,7 @@ MIN_RENDER_FPS = 15
 # 节点数×倍速不超过此负载时保持60帧；超过后只降低绘制频率，
 # 不减少任何固定仿真时间步。
 FULL_RATE_RENDER_LOAD = 1000.0
-WINDOW_TITLE = "Airport Ant Swarm Simulation - Step 2: Local Neighborhoods"
+WINDOW_TITLE = "Airport Ant Swarm Simulation - Step 3: Coverage Pheromone"
 
 # 仿真时间与随机性配置
 SIMULATION_DT_S = 0.1
@@ -33,10 +34,22 @@ RANDOM_SEED = 42
 INITIAL_UGV_COUNT = 20
 
 # 空间网格与局部邻居更新参数。
-# 邻居表每3.0仿真秒刷新一次；车辆策略只能读取自己的局部表。
+# 邻居表每5.0仿真秒刷新一次；车辆策略只能读取自己的局部表。
 # 该周期可按实验精度要求调小，但会增加高倍速下的计算负载。
 NEIGHBOR_GRID_CELL_SIZE_M = 60.0
-NEIGHBOR_UPDATE_INTERVAL_S = 3.0
+NEIGHBOR_UPDATE_INTERVAL_S = 5.0
+
+# 覆盖信息素参数。30米网格对应100×100数组，足够轻量且便于观察。
+COVERAGE_CELL_SIZE_M = 30.0
+COVERAGE_DEPOSIT_RATE_PER_S = 0.5
+COVERAGE_EVAPORATION_RATE_PER_S = 0.01
+COVERAGE_MAX_VALUE = 1.0
+COVERAGE_SAMPLE_DISTANCE_M = 60.0
+COVERAGE_OBSERVATION_INTERVAL_S = 0.5
+COVERAGE_HEATMAP_VISIBLE_DEFAULT = False
+COVERAGE_HEATMAP_REFRESH_FPS = 1
+COVERAGE_HEATMAP_COLOR = (235, 96, 52)
+COVERAGE_HEATMAP_MAX_ALPHA = 105
 
 # 初期无人车运动学参数
 UGV_RADIUS_M = 1.0

@@ -21,6 +21,7 @@ from config import (
     UGV_RADIUS_M,
     UGV_SENSING_RANGE_M,
 )
+from pheromone.field import LocalCoverageObservation
 
 
 PositionValidator = Callable[[int, Tuple[float, float], float], bool]
@@ -72,6 +73,7 @@ class UGV:
     )
     response_thresholds: Dict[str, float] = field(default_factory=dict)
     local_pheromone: Dict[str, float] = field(default_factory=dict)
+    local_coverage: Optional[LocalCoverageObservation] = None
     local_history: Deque[UGVHistoryEntry] = field(
         default_factory=lambda: deque(maxlen=UGV_LOCAL_HISTORY_LENGTH)
     )
@@ -134,6 +136,15 @@ class UGV:
         self.neighbors = (
             set(self.sensed_neighbors) | set(self.communication_neighbors)
         )
+
+    def set_local_coverage(
+        self,
+        observation: LocalCoverageObservation,
+    ) -> None:
+        """只保存本车四个方向的覆盖采样，不接收完整信息素矩阵。"""
+
+        self.local_coverage = observation
+        self.local_pheromone["coverage"] = observation.center
 
     def autonomous_control(
         self,

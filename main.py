@@ -3,6 +3,7 @@
 import math
 import sys
 
+import numpy as np
 import pygame
 
 from agents.manager import UGVManager
@@ -10,6 +11,10 @@ from agents.ugv import UGV
 from airport_map import AirportMap, Passability
 from config import (
     COLORS,
+    COVERAGE_HEATMAP_COLOR,
+    COVERAGE_HEATMAP_MAX_ALPHA,
+    COVERAGE_HEATMAP_REFRESH_FPS,
+    COVERAGE_HEATMAP_VISIBLE_DEFAULT,
     DEFAULT_SIMULATION_SPEED,
     FPS,
     FULL_RATE_RENDER_LOAD,
@@ -34,6 +39,7 @@ from config import (
     WORLD_HEIGHT_M,
     WORLD_WIDTH_M,
 )
+from pheromone.field import CoverageField
 
 
 def create_font(size: int) -> pygame.font.Font:
@@ -196,6 +202,26 @@ def calculate_speed_control_layout(
     return button_rects, pause_rect
 
 
+def calculate_heatmap_toggle_layout(
+    sidebar_rect: pygame.Rect,
+    font: pygame.font.Font,
+) -> pygame.Rect:
+    """计算位于倍速按钮下方的覆盖热力图开关位置。"""
+
+    speed_button_rects, _ = calculate_speed_control_layout(
+        sidebar_rect,
+        font,
+    )
+    padding = max(8, font.get_height() // 2)
+    gap = 4
+    return pygame.Rect(
+        sidebar_rect.x + padding,
+        max(rect.bottom for rect in speed_button_rects.values()) + gap,
+        max(1, sidebar_rect.width - 2 * padding),
+        font.get_height() + 7,
+    )
+
+
 def draw_control_button(
     surface: pygame.Surface,
     rect: pygame.Rect,
@@ -329,6 +355,61 @@ def draw_neighbor_links(
         )
 
 
+def draw_coverage_heatmap(
+    surface: pygame.Surface,
+    airport_map: AirportMap,
+    coverage_field: CoverageField,
+) -> None:
+    """把低分辨率覆盖网格缩放为半透明热力图。"""
+
+    heatmap, position = create_coverage_heatmap_surface(
+        airport_map,
+        coverage_field,
+    )
+    surface.blit(heatmap, position)
+
+
+def create_coverage_heatmap_surface(
+    airport_map: AirportMap,
+    coverage_field: CoverageField,
+) -> tuple[pygame.Surface, tuple[int, int]]:
+    """创建可复用的热力图图层，避免每个显示帧重复缩放。"""
+
+    normalized = np.clip(
+        coverage_field.values.T / coverage_field.maximum_value,
+        0.0,
+        1.0,
+    )
+    heatmap = pygame.Surface(
+        (coverage_field.column_count, coverage_field.row_count),
+        pygame.SRCALPHA,
+    )
+    rgb = pygame.surfarray.pixels3d(heatmap)
+    alpha = pygame.surfarray.pixels_alpha(heatmap)
+    rgb[:, :, 0] = COVERAGE_HEATMAP_COLOR[0]
+    rgb[:, :, 1] = COVERAGE_HEATMAP_COLOR[1]
+    rgb[:, :, 2] = COVERAGE_HEATMAP_COLOR[2]
+    alpha[:, :] = (normalized * COVERAGE_HEATMAP_MAX_ALPHA).astype(
+        np.uint8
+    )
+    del rgb
+    del alpha
+
+    top_left = airport_map.world_to_screen_point((0.0, 0.0))
+    bottom_right = airport_map.world_to_screen_point(
+        (
+            coverage_field.world_width_m,
+            coverage_field.world_height_m,
+        )
+    )
+    display_size = (
+        max(1, bottom_right[0] - top_left[0]),
+        max(1, bottom_right[1] - top_left[1]),
+    )
+    scaled_heatmap = pygame.transform.scale(heatmap, display_size)
+    return scaled_heatmap, top_left
+
+
 def draw_sidebar(
     surface: pygame.Surface,
     sidebar_rect: pygame.Rect,
@@ -339,6 +420,7 @@ def draw_sidebar(
     simulation_time_s: float,
     simulation_speed: float,
     simulation_paused: bool,
+    show_coverage_heatmap: bool,
     mode_text: str,
     mouse_world: tuple[float, float],
     inside_map: bool,
@@ -399,7 +481,20 @@ def draw_sidebar(
             speed == simulation_speed,
         )
 
-    y = max(rect.bottom for rect in button_rects.values()) + max(5, line_gap * 2)
+    heatmap_toggle_rect = calculate_heatmap_toggle_layout(
+        sidebar_rect,
+        font,
+    )
+    draw_control_button(
+        surface,
+        heatmap_toggle_rect,
+        font,
+        f"覆盖热力图: {'开' if show_coverage_heatmap else '关'}",
+        show_coverage_heatmap,
+    )
+
+    y = heatmap_toggle_rect.bottom + max(5, line_gap * 2)
+    local_coverage = ugv.local_coverage
     lines = [
         f"高亮: UGV-{ugv.agent_id}",
         f"位置: {ugv.position[0]:.0f}, {ugv.position[1]:.0f}m",
@@ -409,8 +504,17 @@ def draw_sidebar(
         f"{len(ugv.communication_neighbors)}",
         f"车辆/地图阻挡: {ugv_manager.total_collision_blocks}/"
         f"{ugv_manager.total_map_blocks}",
-        "",
     ]
+    if local_coverage is not None:
+        lines.extend(
+            [
+                f"覆盖 中/前: {local_coverage.center:.2f}/"
+                f"{local_coverage.forward:.2f}",
+                f"覆盖 左/右: {local_coverage.left:.2f}/"
+                f"{local_coverage.right:.2f}",
+            ]
+        )
+    lines.append("")
     if inside_map:
         lines.extend(
             [
@@ -425,6 +529,7 @@ def draw_sidebar(
             "",
             "方向键: 临时接管",
             "空格: 暂停  +/-: 倍速",
+            f"H: 覆盖热图 {'开' if show_coverage_heatmap else '关'}",
             "S: 截图  ESC: 退出",
             "",
         ]
@@ -504,6 +609,12 @@ def main() -> None:
     render_time_accumulator_s = 1.0 / FPS
     simulation_speed = DEFAULT_SIMULATION_SPEED
     simulation_paused = False
+    show_coverage_heatmap = COVERAGE_HEATMAP_VISIBLE_DEFAULT
+    coverage_heatmap_surface = None
+    coverage_heatmap_position = (0, 0)
+    coverage_heatmap_time_accumulator_s = (
+        1.0 / COVERAGE_HEATMAP_REFRESH_FPS
+    )
 
     while running:
         frame_time_s = min(clock.tick(FPS) / 1000.0, MAX_FRAME_TIME_S)
@@ -528,6 +639,7 @@ def main() -> None:
                     map_font,
                     map_viewport,
                 )
+                coverage_heatmap_surface = None
 
             if event.type == pygame.KEYDOWN:
                 if event.key == pygame.K_ESCAPE:
@@ -535,6 +647,10 @@ def main() -> None:
 
                 if event.key == pygame.K_SPACE:
                     simulation_paused = not simulation_paused
+
+                if event.key == pygame.K_h:
+                    show_coverage_heatmap = not show_coverage_heatmap
+                    coverage_heatmap_surface = None
 
                 if event.key in (pygame.K_MINUS, pygame.K_KP_MINUS):
                     simulation_speed = change_simulation_speed(
@@ -555,9 +671,9 @@ def main() -> None:
                 if event.key == pygame.K_s:
                     pygame.image.save(
                         screen,
-                        "airport_sim_step2.png",
+                        "airport_sim_step3.png",
                     )
-                    print("已保存截图：airport_sim_step2.png")
+                    print("已保存截图：airport_sim_step3.png")
 
             if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
                 sidebar_rect, _ = calculate_interface_layout(screen.get_size())
@@ -565,8 +681,15 @@ def main() -> None:
                     sidebar_rect,
                     status_font,
                 )
+                heatmap_toggle_rect = calculate_heatmap_toggle_layout(
+                    sidebar_rect,
+                    status_font,
+                )
                 if pause_rect.collidepoint(event.pos):
                     simulation_paused = not simulation_paused
+                elif heatmap_toggle_rect.collidepoint(event.pos):
+                    show_coverage_heatmap = not show_coverage_heatmap
+                    coverage_heatmap_surface = None
                 else:
                     for speed, button_rect in speed_button_rects.items():
                         if button_rect.collidepoint(event.pos):
@@ -580,6 +703,7 @@ def main() -> None:
             simulation_paused,
         )
         render_time_accumulator_s += frame_time_s
+        coverage_heatmap_time_accumulator_s += frame_time_s
 
         keys = pygame.key.get_pressed()
         acceleration_mps2 = 0.0
@@ -627,6 +751,29 @@ def main() -> None:
         render_time_accumulator_s %= render_interval_s
 
         screen.blit(map_background, (0, 0))
+        if show_coverage_heatmap:
+            heatmap_refresh_interval_s = (
+                1.0 / COVERAGE_HEATMAP_REFRESH_FPS
+            )
+            if (
+                coverage_heatmap_surface is None
+                or coverage_heatmap_time_accumulator_s + 1e-12
+                >= heatmap_refresh_interval_s
+            ):
+                (
+                    coverage_heatmap_surface,
+                    coverage_heatmap_position,
+                ) = create_coverage_heatmap_surface(
+                    airport_map,
+                    ugv_manager.coverage_field,
+                )
+                coverage_heatmap_time_accumulator_s %= (
+                    heatmap_refresh_interval_s
+                )
+            screen.blit(
+                coverage_heatmap_surface,
+                coverage_heatmap_position,
+            )
         draw_neighbor_links(screen, airport_map, ugv)
         for agent in ugv_manager.agents:
             if agent.agent_id != controlled_agent_id:
@@ -656,7 +803,7 @@ def main() -> None:
         elif manual_control_active:
             mode_text = "手动接管UGV-0"
         else:
-            mode_text = "20车自主移动"
+            mode_text = f"{len(ugv_manager.agents)}车自主移动"
         draw_sidebar(
             screen,
             sidebar_rect,
@@ -667,6 +814,7 @@ def main() -> None:
             simulation_time_s,
             simulation_speed,
             simulation_paused,
+            show_coverage_heatmap,
             mode_text,
             mouse_world,
             inside_map,
